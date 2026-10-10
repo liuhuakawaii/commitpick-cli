@@ -1,0 +1,102 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+const execute = promisify(execFile);
+const cli = resolve('src/cli.ts');
+const runner = resolve('node_modules/tsx/dist/cli.mjs');
+async function run(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const pending = execute(process.execPath, [runner, cli, ...args], {
+    cwd,
+    env,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  pending.child.stdin?.end();
+  return pending;
+}
+
+test('CLI generates English/Chinese candidates through a relay, JSON is clean and Git is unchanged', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  git('init', '-q');
+  await writeFile(join(cwd, 'hello.ts'), 'export const hello = true;\n');
+  let calls = 0;
+  const server = createServer(async (req, res) => {
+    calls++;
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const payload = JSON.parse(body);
+    const chinese = payload.messages[0].content.includes('Simplified Chinese');
+    const messages = chinese
+      ? ['feat: 增加问候开关', 'feat: 提供问候配置', 'feat: 导出问候标志']
+      : [
+          'feat: add greeting flag',
+          'feat: expose greeting configuration',
+          'feat: export greeting toggle',
+        ];
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages }) } }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const env = {
+    ...process.env,
+    CMSG_CONFIG: join(cwd, 'missing', 'config.json'),
+    CMSG_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    CMSG_MODEL: 'test-model',
+    CMSG_API_KEY: 'test-key',
+  };
+  const before = git('status', '--porcelain');
+  for (const args of [['--json'], ['zh', '--json'], ['--lang', 'zh', '--json']]) {
+    const result = await run(args, cwd, env).catch((error: Error) => ({
+      stdout: '',
+      stderr: error.message,
+    }));
+    assert.ok(result.stdout.startsWith('{'), `CLI must return JSON: ${result.stderr}`);
+    const data = JSON.parse(result.stdout);
+    assert.equal(data.scope, 'worktree');
+    assert.equal(data.messages.length, 3);
+    if (args.includes('zh')) assert.match(data.messages[0], /增加/);
+    else assert.match(data.messages[0], /greeting/);
+    assert.equal(git('status', '--porcelain'), before);
+  }
+  const picked = await run(['--pick', '2'], cwd, env);
+  assert.equal(picked.stdout.trim(), 'feat: expose greeting configuration');
+  assert.equal(calls, 4);
+  await assert.rejects(run(['--staged', '--worktree'], cwd, env));
+  await assert.rejects(run(['--count', '0'], cwd, env));
+  await assert.rejects(run(['--copy'], cwd, env), (error: Error & { stderr: string }) => {
+    assert.match(error.stderr, /--pick/);
+    return true;
+  });
+  assert.equal(calls, 4, 'invalid CLI options must not call the AI');
+  const shown = await run(['config'], cwd, env);
+  assert.doesNotMatch(shown.stdout, /test-key/);
+  assert.match(shown.stdout, /test-model/);
+});
+
+test('non-interactive missing config fails with setup instruction', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q'], { cwd });
+  await writeFile(join(cwd, 'file.ts'), 'new-file');
+  const env = {
+    ...process.env,
+    CMSG_CONFIG: join(cwd, 'missing.json'),
+    CMSG_BASE_URL: '',
+    CMSG_MODEL: '',
+    CMSG_API_KEY: '',
+  };
+  await assert.rejects(run([], cwd, env), (error: Error & { stderr: string }) => {
+    assert.match(error.stderr, /cmsg setup/);
+    return true;
+  });
+});
