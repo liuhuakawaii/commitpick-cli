@@ -77,6 +77,10 @@ const program = new Command()
     console.error(
       `范围：${label} · ${effective.language === 'zh' ? '中文' : 'English'} · ${effective.count} 条候选`,
     );
+    if (changes.summarized)
+      console.error(
+        '改动较大，已自动整理：保留全部文件变更，源码使用全文或片段，构建产物及锁文件仅保留统计。',
+      );
     const started = performance.now();
     const messages = await generateMessages(effective, changes.diff, { hint: options.hint });
     console.error(`生成完成，用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`);

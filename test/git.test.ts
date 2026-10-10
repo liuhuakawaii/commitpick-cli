@@ -93,7 +93,7 @@ test('empty changes and explicit empty index have actionable errors', async (t) 
   await assert.rejects(collect(cwd, 'staged'), /暂存区/);
 });
 
-test('binary new files use metadata and oversized input fails instead of silently truncating', async (t) => {
+test('binary new files use metadata and large new files are summarized', async (t) => {
   const collect = await collector();
   const { cwd } = await repo(t);
   await writeFile(join(cwd, 'image.bin'), Buffer.from([0, 1, 2, 255]));
@@ -101,7 +101,67 @@ test('binary new files use metadata and oversized input fails instead of silentl
   assert.match(result.diff, /image.bin/);
   assert.match(result.diff, /binary/i);
   await writeFile(join(cwd, 'large.txt'), 'x'.repeat(180_000));
-  await assert.rejects(collect(cwd, 'auto'), /过大|上限/);
+  const large = await collect(cwd, 'auto');
+  assert.equal(large.summarized, true);
+  assert.match(large.diff, /large.txt/);
+  assert.match(large.diff, /excerpt|omitted/i);
+  assert.ok(Buffer.byteLength(large.diff) < 160_000);
+});
+
+test('large staged build assets keep every file operation and prioritize source changes', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  await mkdir(join(cwd, 'public/assets'), { recursive: true });
+  await writeFile(join(cwd, 'public/assets/app-abc123.js'), 'oldBundle();\n'.repeat(30_000));
+  git('add', '.');
+  git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'bundle');
+  await rm(join(cwd, 'public/assets/app-abc123.js'));
+  await writeFile(join(cwd, 'public/assets/app-def456.js'), 'newBundle();\n'.repeat(30_000));
+  await writeFile(join(cwd, 'app.ts'), 'export const preventDuplicateRefresh = true;\n');
+  git('add', '.');
+  await writeFile(join(cwd, 'app.ts'), 'UNSTAGED_DO_NOT_INCLUDE\n');
+  const before = git('status', '--porcelain=v1');
+  const result = await collect(cwd);
+  assert.equal(result.scope, 'staged');
+  assert.equal(result.summarized, true);
+  assert.match(result.diff, /app-abc123.js/);
+  assert.match(result.diff, /app-def456.js/);
+  assert.match(result.diff, /deleted file mode/);
+  assert.match(result.diff, /new file mode/);
+  assert.match(result.diff, /preventDuplicateRefresh/);
+  assert.doesNotMatch(result.diff, /UNSTAGED_DO_NOT_INCLUDE|oldBundle\(\)|newBundle\(\)/);
+  assert.ok(Buffer.byteLength(result.diff) < 160_000);
+  assert.equal(git('status', '--porcelain=v1'), before);
+});
+
+test('large source changes retain excerpts across the file, including the last change', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  await writeFile(
+    join(cwd, 'app.ts'),
+    'export const firstBehavior = true;\n' +
+      'export const repeated = 1;\n'.repeat(20_000) +
+      'export const finalBehavior = true;\n',
+  );
+  git('add', '.');
+  const result = await collect(cwd);
+  assert.equal(result.summarized, true);
+  assert.match(result.diff, /firstBehavior/);
+  assert.match(result.diff, /finalBehavior/);
+  assert.match(result.diff, /excerpt|omitted/i);
+  assert.ok(Buffer.byteLength(result.diff) < 160_000);
+});
+
+test('more than 200 untracked files remain usable and include the last file', async (t) => {
+  const collect = await collector();
+  const { cwd } = await repo(t);
+  await Promise.all(
+    Array.from({ length: 205 }, (_, i) =>
+      writeFile(join(cwd, `file-${i}.ts`), `export const value${i} = ${i};\n`),
+    ),
+  );
+  const result = await collect(cwd);
+  for (let i = 0; i < 205; i++) assert.ok(result.diff.includes(`file-${i}.ts`));
 });
 
 test('deletions and renames are retained in the diff', async (t) => {
@@ -112,4 +172,36 @@ test('deletions and renames are retained in the diff', async (t) => {
   git('reset', '-q');
   await rm(join(cwd, 'renamed.ts'));
   assert.match((await collect(cwd, 'auto')).diff, /deleted file mode/);
+});
+
+test('large worktree context uses final content and retains UTF-8 rename paths', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  git('mv', 'app.ts', '重命名 文件.ts');
+  await writeFile(join(cwd, 'controller.ts'), 'intermediate-value\n');
+  git('add', '.');
+  await writeFile(join(cwd, 'controller.ts'), 'final-behavior\n');
+  await writeFile(join(cwd, 'huge.min.js'), 'x'.repeat(2_000_000));
+  const result = await collect(cwd, 'worktree');
+  assert.equal(result.summarized, true);
+  assert.match(result.diff, /重命名 文件.ts/);
+  assert.match(result.diff, /rename (from|to)/);
+  assert.match(result.diff, /final-behavior/);
+  assert.doesNotMatch(result.diff, /intermediate-value/);
+});
+
+test('invalid UTF-8 late in a large new file discards partial decoded content', async (t) => {
+  const collect = await collector();
+  const { cwd } = await repo(t);
+  await writeFile(
+    join(cwd, 'legacy.txt'),
+    Buffer.concat([
+      Buffer.from('DO_NOT_SEND_PARTIAL_LEGACY_CONTENT\n'.repeat(6000)),
+      Buffer.from([0xff]),
+    ]),
+  );
+  const result = await collect(cwd);
+  assert.match(result.diff, /legacy.txt/);
+  assert.match(result.diff, /Non-UTF-8/);
+  assert.doesNotMatch(result.diff, /DO_NOT_SEND_PARTIAL_LEGACY_CONTENT/);
 });

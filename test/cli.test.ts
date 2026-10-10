@@ -29,11 +29,13 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   git('init', '-q');
   await writeFile(join(cwd, 'hello.ts'), 'export const hello = true;\n');
   let calls = 0;
+  let lastDiff = '';
   const server = createServer(async (req, res) => {
     calls++;
     let body = '';
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
+    lastDiff = JSON.parse(payload.messages[1].content).diff;
     const chinese = payload.messages[0].content.includes('Simplified Chinese');
     const messages = chinese
       ? ['feat: 增加问候开关', 'feat: 提供问候配置', 'feat: 导出问候标志']
@@ -81,6 +83,15 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   const shown = await run(['config'], cwd, env);
   assert.doesNotMatch(shown.stdout, /test-key/);
   assert.match(shown.stdout, /test-model/);
+  await writeFile(join(cwd, 'bundle.min.js'), 'minifiedBundle();'.repeat(40_000));
+  const large = await run(['--json'], cwd, env);
+  assert.equal(JSON.parse(large.stdout).messages.length, 3);
+  assert.match(large.stderr, /已自动整理/);
+  assert.match(lastDiff, /hello.ts/);
+  assert.match(lastDiff, /bundle.min.js/);
+  assert.doesNotMatch(lastDiff, /minifiedBundle/);
+  assert.ok(Buffer.byteLength(lastDiff) < 160_000);
+  assert.equal(calls, 5, 'large changes still need only one AI request');
 });
 
 test('non-interactive missing config fails with setup instruction', async (t) => {
