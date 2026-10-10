@@ -30,7 +30,55 @@ test('accepts host, base URL, custom prefix and full completion endpoint', async
   );
   assert.throws(() => normalizeEndpoint('file:///tmp/test'), /http/);
   assert.throws(() => normalizeEndpoint('https://user:pass@relay.example'), /凭据/);
-  assert.throws(() => normalizeEndpoint('https://relay.example/v1/responses'), /Chat Completions/);
+  assert.equal(
+    normalizeEndpoint('https://relay.example/v1/responses'),
+    'https://relay.example/v1/responses',
+  );
+});
+
+test('Responses endpoint normalization preserves prefixes and switches known protocol suffixes', async () => {
+  const { normalizeEndpoint } = await configModule();
+  for (const [input, expected] of [
+    ['https://relay.example', 'https://relay.example/v1/responses'],
+    ['https://relay.example/custom/v1/', 'https://relay.example/custom/v1/responses'],
+    [
+      'https://relay.example/custom/v1/chat/completions',
+      'https://relay.example/custom/v1/responses',
+    ],
+    ['https://relay.example/custom/v1/responses/', 'https://relay.example/custom/v1/responses'],
+  ])
+    assert.equal(normalizeEndpoint(input!, 'responses'), expected);
+  assert.equal(
+    normalizeEndpoint('https://relay.example/v1/responses', 'chat-completions'),
+    'https://relay.example/v1/chat/completions',
+  );
+  assert.throws(() => normalizeEndpoint('https://relay.example/v1/messages', 'responses'), /协议/);
+});
+
+test('legacy configs stay on Chat Completions and protocol overrides do not modify saved config', async (t) => {
+  const { loadConfig } = await configModule();
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-config-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  const original = JSON.stringify({
+    endpoint: 'https://relay.example/custom/v1/chat/completions',
+    model: 'm',
+    apiKey: 'key',
+    language: 'en',
+    count: 3,
+  });
+  await writeFile(path, original);
+  assert.equal((await loadConfig(path, {}))?.protocol, 'chat-completions');
+  const result = await loadConfig(path, { CMSG_PROTOCOL: 'responses' });
+  assert.equal(result?.protocol, 'responses');
+  assert.equal(result?.endpoint, 'https://relay.example/custom/v1/responses');
+  assert.equal(await readFile(path, 'utf8'), original);
+  await assert.rejects(loadConfig(path, { CMSG_PROTOCOL: 'unknown' }), /协议/);
+  await writeFile(
+    path,
+    JSON.stringify({ endpoint: 'https://relay.example/v1/responses', model: 'm' }),
+  );
+  assert.equal((await loadConfig(path, {}))?.protocol, 'responses');
 });
 
 test('roundtrips config outside repository and environment overrides saved credentials', async (t) => {
@@ -41,6 +89,7 @@ test('roundtrips config outside repository and environment overrides saved crede
   assert.equal(await loadConfig(path, {}), null);
   await saveConfig(
     {
+      protocol: 'chat-completions',
       endpoint: 'https://relay.example/v1/chat/completions',
       apiKey: 'test-key',
       model: 'fast-model',
@@ -62,6 +111,22 @@ test('roundtrips config outside repository and environment overrides saved crede
   assert.equal(overridden?.model, 'env-model');
   assert.equal(overridden?.endpoint, 'https://other.example/v1/chat/completions');
   assert.doesNotMatch(await readFile(path, 'utf8'), /env-key/);
+});
+
+test('full endpoints at the domain root keep their exact path', async () => {
+  const { normalizeEndpoint } = await configModule();
+  assert.equal(
+    normalizeEndpoint('https://relay.example/chat/completions'),
+    'https://relay.example/chat/completions',
+  );
+  assert.equal(
+    normalizeEndpoint('https://relay.example/responses'),
+    'https://relay.example/responses',
+  );
+  assert.equal(
+    normalizeEndpoint('https://relay.example/chat/completions', 'responses'),
+    'https://relay.example/responses',
+  );
 });
 
 test('malformed config is reported rather than silently replaced', async (t) => {

@@ -7,7 +7,7 @@
 - `src/git.ts` 拥有改动范围、Git 流式读取和模型输入整理。
 - `src/config.ts` 拥有配置路径、校验、环境变量覆盖和原子保存。
 - `src/setup.ts` 拥有交互式配置流程；不把环境变量中的临时值写入持久配置。
-- `src/ai.ts` 拥有 Chat Completions 请求、超时和候选格式校验。
+- `src/ai.ts` 拥有 Responses / Chat Completions 请求、超时和候选格式校验。
 - `src/cli.ts` 只组合参数、流程、选择菜单、输出与剪贴板。
 
 ## 行为契约
@@ -22,6 +22,8 @@
 - 二进制和非 UTF-8 新文件只提供元数据。大文件流式读取，避免完整缓冲构建产物。
 - `--json` 的 stdout 只能是 JSON；进度和范围写 stderr。API Key 不出现在输出中。
 - 配置存于用户配置目录，不存进项目。`CMSG_CONFIG` 可隔离测试配置。
+- `protocol` 支持 `responses` 和 `chat-completions`；旧配置未指定协议时，从完整接口后缀推断，否则保持 Chat Completions。显式协议会替换已知接口后缀，保留路径前缀；不自动探测或重试其他协议。
+- Responses 使用非流式请求及 `store: false`，只接受完成状态中的 assistant 文本。`cmsg test` 使用固定示例验证连接及候选格式，不读取 Git 或仓库文件。
 
 ## 开发与验证
 

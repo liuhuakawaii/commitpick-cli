@@ -19,7 +19,7 @@ test('setup asks for address, masked key, model and language; preserves saved ke
       passwordCalls++;
       return 'test-key';
     },
-    select: async () => 'zh',
+    select: async ({ message }) => (message.includes('协议') ? 'chat-completions' : 'zh'),
   });
   const saved = await loadConfig(path, {});
   assert.equal(saved?.endpoint, 'https://relay.example/v1/chat/completions');
@@ -32,8 +32,45 @@ test('setup asks for address, masked key, model and language; preserves saved ke
   await module.setupConfig(path, {
     input: async ({ default: value }) => value!,
     password: async () => '',
-    select: async () => 'en',
+    select: async ({ message }) => (message.includes('协议') ? 'chat-completions' : 'en'),
   });
   assert.equal((await loadConfig(path, {}))?.apiKey, 'test-key');
   assert.equal((await loadConfig(path, {}))?.count, 5);
+});
+
+test('setup switches a saved Chat Completions endpoint to Responses without persisting environment overrides', async (t) => {
+  const { setupConfig } = await import('../src/setup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-setup-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  await saveConfig(
+    {
+      protocol: 'chat-completions',
+      endpoint: 'https://relay.example/custom/v1/chat/completions',
+      apiKey: 'saved-key',
+      model: 'saved-model',
+      language: 'zh',
+      count: 5,
+    },
+    path,
+  );
+  const original = process.env.CMSG_PROTOCOL;
+  process.env.CMSG_PROTOCOL = 'chat-completions';
+  t.after(() => {
+    if (original === undefined) delete process.env.CMSG_PROTOCOL;
+    else process.env.CMSG_PROTOCOL = original;
+  });
+  await setupConfig(path, {
+    input: async ({ default: value }) => value!,
+    password: async () => '',
+    select: async ({ message }) => (message.includes('协议') ? 'responses' : 'zh'),
+  });
+  assert.deepEqual(await loadConfig(path, {}), {
+    protocol: 'responses',
+    endpoint: 'https://relay.example/custom/v1/responses',
+    apiKey: 'saved-key',
+    model: 'saved-model',
+    language: 'zh',
+    count: 5,
+  });
 });

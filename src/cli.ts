@@ -47,7 +47,7 @@ const program = new Command()
   .option('--hint <text>', '补充一句改动意图')
   .addHelpText(
     'after',
-    '\n示例：\n  cmsg setup        配置地址、Key、模型和默认语言\n  cmsg              生成 3 条候选，方向键选择并复制\n  cmsg zh           本次生成中文消息\n  cmsg en           本次生成英文消息\n  cmsg -s --json    只根据暂存区生成 JSON\n  cmsg --pick 2 -c  复制第 2 条候选\n\n本工具不会执行 git add、commit 或 push。',
+    '\n示例：\n  cmsg setup        配置协议、地址、Key、模型和默认语言\n  cmsg config       查看生效配置（隐藏 Key）\n  cmsg test         用固定示例测试 AI，不读取仓库\n  cmsg              生成 3 条候选，方向键选择并复制\n  cmsg zh           本次生成中文消息\n  cmsg en           本次生成英文消息\n  cmsg -s --json    只根据暂存区生成 JSON\n  cmsg --pick 2 -c  复制第 2 条候选\n\n本工具不会执行 git add、commit 或 push。',
   )
   .action(async (language: string | undefined, options: Options) => {
     if (language && language !== 'zh' && language !== 'en')
@@ -119,10 +119,39 @@ program
   .action(async () => {
     if (!interactive)
       throw new Error(
-        '请在交互式终端运行 cmsg setup；脚本可使用 CMSG_BASE_URL、CMSG_API_KEY、CMSG_MODEL。',
+        '请在交互式终端运行 cmsg setup；脚本可使用 CMSG_PROTOCOL、CMSG_BASE_URL、CMSG_API_KEY、CMSG_MODEL。',
       );
     await setupConfig();
     console.log(`配置已保存：${configPath()}\n现在进入 Git 仓库运行 cmsg 即可。`);
+  });
+
+program
+  .command('test')
+  .description('用固定示例测试 AI 连接及候选格式，不读取仓库改动')
+  .option('--json', '输出 JSON，供脚本使用')
+  .action(async (_options: unknown, command: Command) => {
+    const options = command.optsWithGlobals<{ json?: boolean }>();
+    const config = await loadConfig();
+    if (!config) throw new Error('尚未配置 AI，请先在终端运行 cmsg setup。');
+    console.error(`测试：${config.protocol} · ${config.model}\n请求地址：${config.endpoint}`);
+    console.error('发送固定示例，不读取仓库改动。');
+    const started = performance.now();
+    const messages = await generateMessages(
+      { ...config, count: 1 },
+      'diff --git a/example.txt b/example.txt\nnew file mode 100644\n--- /dev/null\n+++ b/example.txt\n@@ -0,0 +1 @@\n+Hello world\n',
+    );
+    console.error(
+      `测试通过：连接和候选格式有效，用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`,
+    );
+    console.log(
+      options.json
+        ? JSON.stringify(
+            { protocol: config.protocol, endpoint: config.endpoint, model: config.model, messages },
+            null,
+            2,
+          )
+        : messages[0],
+    );
   });
 
 program

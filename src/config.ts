@@ -4,7 +4,9 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export type Language = 'zh' | 'en';
+export type Protocol = 'chat-completions' | 'responses';
 export interface Config {
+  protocol: Protocol;
   endpoint: string;
   apiKey: string;
   model: string;
@@ -21,7 +23,9 @@ export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(base, 'commitpick', 'config.json');
 }
 
-export function normalizeEndpoint(value: string): string {
+export function normalizeEndpoint(value: string, protocol?: Protocol): string {
+  if (protocol !== undefined && protocol !== 'chat-completions' && protocol !== 'responses')
+    throw new Error('AI 协议只支持 responses 或 chat-completions。');
   let url: URL;
   try {
     url = new URL(value.trim());
@@ -33,9 +37,11 @@ export function normalizeEndpoint(value: string): string {
   if (url.username || url.password || url.search || url.hash)
     throw new Error('AI 地址不能包含凭据、查询参数或片段；Key 请单独填写。');
   const path = url.pathname.replace(/\/+$/, '');
-  if (path.endsWith('/responses') || path.endsWith('/messages'))
-    throw new Error('目前支持 Chat Completions 接口，请使用对应的 Base URL。');
-  url.pathname = path.endsWith('/chat/completions') ? path : `${path || '/v1'}/chat/completions`;
+  if (path.endsWith('/messages'))
+    throw new Error('不支持 Messages 协议，请使用 Responses 或 Chat Completions 接口。');
+  const selected = protocol ?? (path.endsWith('/responses') ? 'responses' : 'chat-completions');
+  const base = (path || '/v1').replace(/\/(?:chat\/completions|responses)$/, '');
+  url.pathname = `${base}/${selected === 'responses' ? 'responses' : 'chat/completions'}`;
   return url.toString();
 }
 
@@ -50,8 +56,10 @@ function validateConfig(value: unknown): Config {
     throw new Error('配置语言只支持 zh 或 en。');
   if (!Number.isInteger(data.count) || Number(data.count) < 1 || Number(data.count) > 5)
     throw new Error('候选数量必须是 1 到 5 的整数。');
+  const endpoint = normalizeEndpoint(data.endpoint, data.protocol as Protocol | undefined);
   return {
-    endpoint: normalizeEndpoint(data.endpoint),
+    protocol: endpoint.endsWith('/responses') ? 'responses' : 'chat-completions',
+    endpoint,
     apiKey: (data.apiKey as string | undefined)?.trim() ?? '',
     model: data.model.trim(),
     language: data.language,
@@ -78,6 +86,7 @@ export async function loadConfig(
     language: 'en',
     count: 3,
     ...saved,
+    ...(env.CMSG_PROTOCOL ? { protocol: env.CMSG_PROTOCOL } : {}),
     ...(env.CMSG_BASE_URL ? { endpoint: env.CMSG_BASE_URL } : {}),
     ...(env.CMSG_MODEL ? { model: env.CMSG_MODEL } : {}),
     ...(env.CMSG_API_KEY !== undefined ? { apiKey: env.CMSG_API_KEY } : {}),

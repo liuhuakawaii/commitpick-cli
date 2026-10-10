@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { Config } from '../src/config.js';
 
 async function aiModule() {
   const module = await import('../src/ai.js').catch(() => null);
@@ -14,6 +15,146 @@ const messages = [
   'fix(auth): reuse the pending refresh promise',
   'fix(auth): serialize token refresh calls',
 ];
+
+test('Responses sends one stateless request and extracts assistant text after reasoning items', async (t) => {
+  const { generateMessages } = await aiModule();
+  const requests: { url?: string; authorization?: string; body: Record<string, any> }[] = [];
+  const text = JSON.stringify({ messages });
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    requests.push({
+      url: req.url,
+      authorization: req.headers.authorization,
+      body: JSON.parse(body),
+    });
+    res.setHeader('content-type', 'application/json');
+    res.end(
+      JSON.stringify({
+        status: 'completed',
+        output: [
+          { type: 'reasoning', summary: [] },
+          {
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              { type: 'output_text', text: text.slice(0, 20) },
+              { type: 'output_text', text: text.slice(20) },
+            ],
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const result = await generateMessages(
+    {
+      protocol: 'responses',
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/custom/v1/responses`,
+      apiKey: 'test-key',
+      model: 'relay-model',
+      language: 'zh',
+      count: 3,
+    },
+    'actual-diff',
+    { hint: 'intent' },
+  );
+  assert.deepEqual(result, messages);
+  assert.equal(requests.length, 1);
+  const request = requests[0]!;
+  assert.equal(request.url, '/custom/v1/responses');
+  assert.equal(request.authorization, 'Bearer test-key');
+  assert.equal(request.body.model, 'relay-model');
+  assert.equal(request.body.store, false);
+  assert.equal(request.body.stream, false);
+  assert.match(request.body.instructions, /Simplified Chinese/);
+  assert.deepEqual(JSON.parse(request.body.input[0].content), {
+    hint: 'intent',
+    diff: 'actual-diff',
+  });
+  assert.equal(request.body.messages, undefined);
+});
+
+test('Responses rejects unfinished, failed, refused and malformed output without exposing response data', async (t) => {
+  const { generateMessages } = await aiModule();
+  const validOutput = [
+    {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: JSON.stringify({ messages }) }],
+    },
+  ];
+  let payload: unknown;
+  let status = 200;
+  let calls = 0;
+  const server = createServer((_req, res) => {
+    calls++;
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const config: Config = {
+    protocol: 'responses',
+    endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/responses`,
+    apiKey: 'secret-key',
+    model: 'm',
+    language: 'en',
+    count: 3,
+  };
+  for (const responseStatus of ['incomplete', 'failed', 'queued', 'in_progress', 'cancelled']) {
+    payload = { status: responseStatus, output: validOutput, error: { message: 'secret-key' } };
+    await assert.rejects(generateMessages(config, 'diff'), (error: Error) => {
+      assert.match(error.message, /Responses.*未完成|Responses.*失败/);
+      assert.doesNotMatch(error.message, /secret-key/);
+      return true;
+    });
+  }
+  payload = {
+    status: 'completed',
+    output: [
+      { type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'secret-key' }] },
+    ],
+  };
+  await assert.rejects(generateMessages(config, 'diff'), /拒绝/);
+  for (const output of [
+    undefined,
+    {},
+    [null],
+    [{ type: 'reasoning' }],
+    [{ type: 'message', role: 'assistant', content: {} }],
+  ]) {
+    payload = { status: 'completed', output };
+    await assert.rejects(generateMessages(config, 'diff'), /Responses.*文本|Responses.*格式/);
+  }
+  payload = {
+    status: 'completed',
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'output_text',
+            text: JSON.stringify({ messages: ['fix: same', 'fix: same', 'fix: same'] }),
+          },
+        ],
+      },
+    ],
+  };
+  await assert.rejects(generateMessages(config, 'diff'), /重复/);
+  status = 403;
+  payload = { error: { message: 'secret-key' } };
+  await assert.rejects(generateMessages(config, 'diff'), (error: Error) => {
+    assert.match(error.message, /403/);
+    assert.doesNotMatch(error.message, /secret-key/);
+    return true;
+  });
+  assert.equal(calls, 13);
+});
 
 test('one request returns three candidates and forwards custom model, key and Chinese instruction', async (t) => {
   const { generateMessages } = await aiModule();
@@ -54,6 +195,7 @@ test('one request returns three candidates and forwards custom model, key and Ch
   const port = (server.address() as AddressInfo).port;
   const result = await generateMessages(
     {
+      protocol: 'chat-completions',
       endpoint: `http://127.0.0.1:${port}/custom/v1/chat/completions`,
       apiKey: 'test-key',
       model: 'relay-fast-model',
@@ -94,6 +236,7 @@ test('HTTP errors never echo provider response or credentials', async (t) => {
   await assert.rejects(
     generateMessages(
       {
+        protocol: 'chat-completions',
         endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/chat/completions`,
         apiKey: 'secret-provider-key',
         model: 'm',
@@ -124,6 +267,7 @@ test('slow endpoint times out without an automatic second request', async (t) =>
   await assert.rejects(
     generateMessages(
       {
+        protocol: 'chat-completions',
         endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/chat/completions`,
         apiKey: '',
         model: 'm',

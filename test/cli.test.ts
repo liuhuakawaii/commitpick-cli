@@ -35,8 +35,11 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     let body = '';
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
-    lastDiff = JSON.parse(payload.messages[1].content).diff;
-    const chinese = payload.messages[0].content.includes('Simplified Chinese');
+    const responses = req.url?.endsWith('/responses');
+    lastDiff = JSON.parse(responses ? payload.input[0].content : payload.messages[1].content).diff;
+    const chinese = (responses ? payload.instructions : payload.messages[0].content).includes(
+      'Simplified Chinese',
+    );
     const messages = chinese
       ? ['feat: 增加问候开关', 'feat: 提供问候配置', 'feat: 导出问候标志']
       : [
@@ -45,7 +48,23 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
           'feat: export greeting toggle',
         ];
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages }) } }] }));
+    const content = JSON.stringify({ messages });
+    res.end(
+      JSON.stringify(
+        responses
+          ? {
+              status: 'completed',
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: content }],
+                },
+              ],
+            }
+          : { choices: [{ message: { content } }] },
+      ),
+    );
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -55,6 +74,7 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     CMSG_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     CMSG_MODEL: 'test-model',
     CMSG_API_KEY: 'test-key',
+    CMSG_PROTOCOL: 'chat-completions',
   };
   const before = git('status', '--porcelain');
   for (const args of [['--json'], ['zh', '--json'], ['--lang', 'zh', '--json']]) {
@@ -92,6 +112,11 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   assert.doesNotMatch(lastDiff, /minifiedBundle/);
   assert.ok(Buffer.byteLength(lastDiff) < 160_000);
   assert.equal(calls, 5, 'large changes still need only one AI request');
+  const status = git('status', '--porcelain');
+  const responses = await run(['zh', '--json'], cwd, { ...env, CMSG_PROTOCOL: 'responses' });
+  assert.match(JSON.parse(responses.stdout).messages[0], /增加/);
+  assert.equal(calls, 6);
+  assert.equal(git('status', '--porcelain'), status);
 });
 
 test('non-interactive missing config fails with setup instruction', async (t) => {
@@ -105,9 +130,92 @@ test('non-interactive missing config fails with setup instruction', async (t) =>
     CMSG_BASE_URL: '',
     CMSG_MODEL: '',
     CMSG_API_KEY: '',
+    CMSG_PROTOCOL: '',
   };
   await assert.rejects(run([], cwd, env), (error: Error & { stderr: string }) => {
     assert.match(error.stderr, /cmsg setup/);
     return true;
   });
+});
+
+test('test command uses a fixed sample outside Git for both protocols and keeps JSON and keys clean', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-test-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await writeFile(join(cwd, 'private.txt'), 'private-workspace-marker');
+  const requests: { url?: string; body: Record<string, any> }[] = [];
+  let responseStatus = 200;
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    requests.push({ url: req.url, body: JSON.parse(body) });
+    res.writeHead(responseStatus, { 'content-type': 'application/json' });
+    const content = JSON.stringify({ messages: ['docs: add example greeting'] });
+    res.end(
+      JSON.stringify(
+        responseStatus !== 200
+          ? { error: { message: 'secret-test-key' } }
+          : req.url?.endsWith('/responses')
+            ? {
+                status: 'completed',
+                output: [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: content }],
+                  },
+                ],
+              }
+            : { choices: [{ message: { content } }] },
+      ),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const env = {
+    ...process.env,
+    CMSG_CONFIG: join(cwd, 'missing.json'),
+    CMSG_BASE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/custom/v1`,
+    CMSG_MODEL: 'test-model',
+    CMSG_API_KEY: 'secret-test-key',
+    CMSG_PROTOCOL: 'responses',
+  };
+  for (const protocol of ['responses', 'chat-completions']) {
+    const result = await run(['test', '--json'], cwd, { ...env, CMSG_PROTOCOL: protocol });
+    const data = JSON.parse(result.stdout);
+    assert.equal(data.protocol, protocol);
+    assert.deepEqual(data.messages, ['docs: add example greeting']);
+    assert.doesNotMatch(result.stdout + result.stderr, /secret-test-key/);
+    const request = requests.at(-1)!;
+    assert.equal(
+      request.url,
+      `/custom/v1/${protocol === 'responses' ? 'responses' : 'chat/completions'}`,
+    );
+    assert.doesNotMatch(JSON.stringify(request.body), /private-workspace-marker|private.txt/);
+  }
+  assert.equal(requests.length, 2);
+  const displayed = await run(['config'], cwd, env);
+  assert.match(displayed.stdout, /"protocol": "responses"/);
+  assert.doesNotMatch(displayed.stdout, /secret-test-key/);
+  const human = await run(['test'], cwd, env);
+  assert.match(human.stderr, /测试通过/);
+  assert.match(human.stdout, /docs: add example greeting/);
+  responseStatus = 403;
+  await assert.rejects(
+    run(['test', '--json'], cwd, env),
+    (error: Error & { stdout: string; stderr: string }) => {
+      assert.equal(error.stdout, '');
+      assert.match(error.stderr, /403/);
+      assert.doesNotMatch(error.stderr, /secret-test-key/);
+      return true;
+    },
+  );
+  assert.equal(requests.length, 4);
+  await assert.rejects(
+    run(['test'], cwd, { ...env, CMSG_BASE_URL: '', CMSG_MODEL: '' }),
+    (error: Error & { stderr: string }) => {
+      assert.match(error.stderr, /cmsg setup/);
+      return true;
+    },
+  );
+  assert.equal(requests.length, 4);
 });

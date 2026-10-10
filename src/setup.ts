@@ -5,6 +5,7 @@ import {
   saveConfig,
   type Config,
   type Language,
+  type Protocol,
 } from './config.js';
 
 interface Prompts {
@@ -16,21 +17,31 @@ interface Prompts {
   password: (options: { message: string; mask: string }) => Promise<string>;
   select: (options: {
     message: string;
-    default: Language;
-    choices: { name: string; value: Language }[];
-  }) => Promise<Language>;
+    default: string;
+    choices: { name: string; value: string }[];
+  }) => Promise<string>;
 }
 
 export async function setupConfig(path = configPath(), prompts?: Prompts): Promise<Config> {
   const ui = prompts ?? (await import('@inquirer/prompts'));
   // Setup edits persisted configuration only; temporary environment overrides are never saved.
   const previous = await loadConfig(path, {});
+  const protocol = (await ui.select({
+    message: 'AI 接口协议（按服务商文档选择）',
+    default: previous?.protocol ?? 'responses',
+    choices: [
+      { name: 'Responses（Codex / Responses 兼容中转站）', value: 'responses' },
+      { name: 'Chat Completions（聊天补全兼容接口）', value: 'chat-completions' },
+    ],
+  })) as Protocol;
   const address = await ui.input({
-    message: 'AI 地址（域名、Base URL 或完整 chat/completions 地址）',
-    default: previous?.endpoint ?? 'https://api.openai.com/v1',
+    message: 'AI 地址（域名、Base URL 或完整接口地址）',
+    default: previous
+      ? normalizeEndpoint(previous.endpoint, protocol)
+      : 'https://api.openai.com/v1',
     validate: (value) => {
       try {
-        normalizeEndpoint(value);
+        normalizeEndpoint(value, protocol);
         return true;
       } catch (error) {
         return (error as Error).message;
@@ -57,10 +68,11 @@ export async function setupConfig(path = configPath(), prompts?: Prompts): Promi
     ],
   });
   const config: Config = {
-    endpoint: normalizeEndpoint(address),
+    protocol,
+    endpoint: normalizeEndpoint(address, protocol),
     apiKey: key.trim() === '-' ? '' : key.trim() || previous?.apiKey || '',
     model: model.trim(),
-    language,
+    language: language as Language,
     count: previous?.count ?? 3,
   };
   await saveConfig(config, path);
