@@ -3,6 +3,9 @@ import {
   loadConfig,
   normalizeEndpoint,
   saveConfig,
+  backupConfig,
+  savePreferences,
+  loadPreferences,
   type Config,
   type Language,
   type Protocol,
@@ -22,10 +25,15 @@ interface Prompts {
   }) => Promise<string>;
 }
 
-export async function setupConfig(path = configPath(), prompts?: Prompts): Promise<Config> {
+export async function setupConfig(
+  path = configPath(),
+  prompts?: Prompts,
+  options: { reset?: boolean } = {},
+): Promise<Config> {
   const ui = prompts ?? (await import('@inquirer/prompts'));
   // Setup edits persisted configuration only; temporary environment overrides are never saved.
-  const previous = await loadConfig(path, {});
+  const previous = options.reset ? null : await loadConfig(path, {});
+  const preferences = await loadPreferences(path);
   const protocol = (await ui.select({
     message: 'AI 接口协议（按服务商文档选择）',
     default: previous?.protocol ?? 'responses',
@@ -61,8 +69,9 @@ export async function setupConfig(path = configPath(), prompts?: Prompts): Promi
   });
   const language = await ui.select({
     message: '默认提交信息语言',
-    default: previous?.language ?? 'en',
+    default: preferences.language,
     choices: [
+      { name: 'English + 简体中文（默认各 2 条）', value: 'both' },
       { name: 'English', value: 'en' },
       { name: '简体中文', value: 'zh' },
     ],
@@ -73,8 +82,10 @@ export async function setupConfig(path = configPath(), prompts?: Prompts): Promi
     apiKey: key.trim() === '-' ? '' : key.trim() || previous?.apiKey || '',
     model: model.trim(),
     language: language as Language,
-    count: previous?.count ?? 3,
+    count: preferences.count,
   };
+  if (options.reset) await backupConfig(path);
   await saveConfig(config, path);
+  await savePreferences({ language: config.language, count: config.count }, path);
   return config;
 }

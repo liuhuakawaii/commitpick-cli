@@ -17,6 +17,101 @@ const messages = [
   'fix(auth): serialize token refresh calls',
 ];
 
+test('one bilingual request keeps a fixed language order and reports provider usage', async (t) => {
+  const { generateMessages } = await aiModule();
+  const bilingual = [
+    'fix(auth): reuse pending refresh',
+    'fix(auth): deduplicate refresh requests',
+    'fix(auth): 复用进行中的刷新请求',
+    'fix(auth): 避免重复发起刷新请求',
+  ];
+  let calls = 0;
+  let returned = bilingual;
+  const requestBodies: Record<string, any>[] = [];
+  const server = createServer(async (req, res) => {
+    calls++;
+    let body = '';
+    for await (const part of req) body += part;
+    requestBodies.push(JSON.parse(body));
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ messages: returned }) } }],
+        usage: { prompt_tokens: 900, completion_tokens: 80, total_tokens: 980 },
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  let usage: unknown;
+  const config: Config = {
+    protocol: 'chat-completions',
+    endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    apiKey: '',
+    model: 'm',
+    language: 'both',
+    count: 4,
+  };
+  const result = await generateMessages(config, 'diff', {
+    onUsage: (value) => {
+      usage = value;
+    },
+  });
+  assert.deepEqual(result, bilingual);
+  assert.equal(calls, 1);
+  assert.match(requestBodies[0]!.messages[0].content, /en, en, zh, zh/);
+  assert.deepEqual(usage, { inputTokens: 900, outputTokens: 80, totalTokens: 980 });
+  returned = [...bilingual].reverse();
+  await assert.rejects(generateMessages(config, 'diff'), /语言|顺序/);
+  assert.equal(calls, 2, 'invalid output must not trigger a second request');
+  returned = ['fix(auth): reuse refresh in 中文.ts', bilingual[1]!, bilingual[2]!, bilingual[3]!];
+  assert.deepEqual(
+    await generateMessages(config, 'diff'),
+    returned,
+    'English wording may reference UTF-8 file names',
+  );
+});
+
+test('Responses usage is normalized without exposing extra provider fields', async (t) => {
+  const { generateMessages } = await aiModule();
+  const server = createServer((_req, res) =>
+    res.end(
+      JSON.stringify({
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [
+              { type: 'output_text', text: JSON.stringify({ messages: ['docs: update guide'] }) },
+            ],
+          },
+        ],
+        usage: { input_tokens: 120, output_tokens: 12, total_tokens: 132, internal: 'do-not-echo' },
+      }),
+    ),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  let usage: unknown;
+  await generateMessages(
+    {
+      protocol: 'responses',
+      endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      apiKey: '',
+      model: 'm',
+      language: 'en',
+      count: 1,
+    },
+    'diff',
+    {
+      onUsage: (value) => {
+        usage = value;
+      },
+    },
+  );
+  assert.deepEqual(usage, { inputTokens: 120, outputTokens: 12, totalTokens: 132 });
+});
+
 test('Responses sends one stateless request and extracts assistant text after reasoning items', async (t) => {
   const { generateMessages } = await aiModule();
   const requests: { url?: string; authorization?: string; body: Record<string, any> }[] = [];

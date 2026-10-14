@@ -43,16 +43,27 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     const payload = JSON.parse(body);
     const responses = req.url?.endsWith('/responses');
     lastDiff = JSON.parse(responses ? payload.input[0].content : payload.messages[1].content).diff;
-    const chinese = (responses ? payload.instructions : payload.messages[0].content).includes(
-      'Simplified Chinese',
+    const prompt = responses ? payload.instructions : payload.messages[0].content;
+    const order = /in order: ([a-z, ]+) \(/.exec(prompt)![1]!.split(', ');
+    const english = [
+      'feat: add greeting flag',
+      'feat: expose greeting configuration',
+      'feat: export greeting toggle',
+      'feat: introduce greeting switch',
+      'feat: provide greeting flag',
+    ];
+    const chinese = [
+      'feat: 增加问候开关',
+      'feat: 提供问候配置',
+      'feat: 导出问候标志',
+      'feat: 引入问候开关',
+      'feat: 添加问候标志',
+    ];
+    let en = 0,
+      zh = 0;
+    const messages = order.map((language: string) =>
+      language === 'en' ? english[en++] : chinese[zh++],
     );
-    const messages = chinese
-      ? ['feat: 增加问候开关', 'feat: 提供问候配置', 'feat: 导出问候标志']
-      : [
-          'feat: add greeting flag',
-          'feat: expose greeting configuration',
-          'feat: export greeting toggle',
-        ];
     res.setHeader('content-type', 'application/json');
     const content = JSON.stringify({ messages });
     res.end(
@@ -91,7 +102,7 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     assert.ok(result.stdout.startsWith('{'), `CLI must return JSON: ${result.stderr}`);
     const data = JSON.parse(result.stdout);
     assert.equal(data.scope, 'worktree');
-    assert.equal(data.messages.length, 3);
+    assert.equal(data.messages.length, 4);
     if (args.includes('zh')) assert.match(data.messages[0], /增加/);
     else assert.match(data.messages[0], /greeting/);
     assert.equal(git('status', '--porcelain'), before);
@@ -111,7 +122,7 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   assert.match(shown.stdout, /test-model/);
   await writeFile(join(cwd, 'bundle.min.js'), 'minifiedBundle();'.repeat(40_000));
   const large = await run(['--json'], cwd, env);
-  assert.equal(JSON.parse(large.stdout).messages.length, 3);
+  assert.equal(JSON.parse(large.stdout).messages.length, 4);
   assert.match(large.stderr, /已自动整理/);
   assert.match(lastDiff, /hello.ts/);
   assert.match(lastDiff, /bundle.min.js/);
@@ -156,7 +167,7 @@ test('missing config generates local candidates without setup or network and pre
   const result = await run(['zh', '--json'], cwd, env);
   const data = JSON.parse(result.stdout);
   assert.equal(data.source, 'local');
-  assert.equal(data.messages.length, 3);
+  assert.equal(data.messages.length, 4);
   assert.match(data.messages[0], /file.ts/);
   assert.match(result.stderr, /本地规则/);
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' }), before);

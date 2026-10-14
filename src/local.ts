@@ -1,4 +1,4 @@
-import type { Language } from './config.js';
+import { candidateLanguages, type Language } from './config.js';
 import type { ChangedFile } from './git.js';
 
 // These rules describe observable file operations, never infer a bug or feature.
@@ -55,8 +55,10 @@ export function generateLocalMessages(
   const type = categories.size === 1 ? [...categories][0]! : 'chore';
   const groups = new Map<ChangedFile['status'], number>();
   for (const file of files) groups.set(file.status, (groups.get(file.status) ?? 0) + 1);
-  const zh = options.language === 'zh';
-  return Array.from({ length: options.count }, (_, i) => {
+  const indices = { en: 0, zh: 0 };
+  return candidateLanguages(options.language, options.count).map((language) => {
+    const i = indices[language]++;
+    const zh = language === 'zh';
     const clauses = [...groups].map(([status, count]) => {
       let target = zh ? `${count} 个文件` : `${count} ${count === 1 ? 'file' : 'files'}`;
       if (files.length === 1) {
@@ -64,8 +66,25 @@ export function generateLocalMessages(
         target = file.previousPath
           ? `${displayPath(file.previousPath)} -> ${displayPath(file.path)}`
           : displayPath(file.path);
+      } else {
+        const group = files.filter((file) => file.status === status);
+        const paths = group.map((file) =>
+          file.previousPath
+            ? `${displayPath(file.previousPath)} -> ${displayPath(file.path)}`
+            : displayPath(file.path),
+        );
+        if (paths.length <= 3) target = paths.join(', ');
+        else {
+          const directories = group.map((file) => file.path.split('/').slice(0, -1));
+          const shared: string[] = [];
+          for (const [index, part] of directories[0]!.entries()) {
+            if (!directories.every((parts) => parts[index] === part)) break;
+            shared.push(part);
+          }
+          if (shared.length) target += ` (${displayPath(shared.join('/'))}/)`;
+        }
       }
-      return `${verbs[options.language][status][i]} ${target}`;
+      return `${verbs[language][status][i]} ${target}`;
     });
     const detailed = `${type}: ${clauses.join(zh ? '，' : ', ')}`;
     if (Array.from(detailed).length <= 100) return detailed;

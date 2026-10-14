@@ -1,9 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig, saveConfig } from '../src/config.js';
+import { loadConfig, loadPreferences, saveConfig, savePreferences } from '../src/config.js';
+
+test('explicit reset backs up malformed configuration before replacing it', async (t) => {
+  const { setupConfig } = await import('../src/setup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-reset-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  await writeFile(path, '{broken');
+  await setupConfig(
+    path,
+    {
+      input: async ({ message }) =>
+        message.includes('地址') ? 'http://localhost:1234/v1' : 'local-model',
+      password: async () => '',
+      select: async ({ message }) => (message.includes('协议') ? 'responses' : 'both'),
+    },
+    { reset: true },
+  );
+  const backup = (await readdir(dir)).find((name) => name.endsWith('.bak'));
+  assert.ok(backup, 'reset must leave a recoverable backup');
+  assert.equal(await readFile(join(dir, backup), 'utf8'), '{broken');
+  assert.equal((await loadConfig(path, {}))?.model, 'local-model');
+});
 
 test('setup asks for address, masked key, model and language; preserves saved key on rerun', async (t) => {
   const module = await import('../src/setup.js').catch(() => null);
@@ -25,17 +47,16 @@ test('setup asks for address, masked key, model and language; preserves saved ke
   assert.equal(saved?.endpoint, 'https://relay.example/v1/chat/completions');
   assert.equal(saved?.apiKey, 'test-key');
   assert.equal(saved?.model, 'fast-model');
-  assert.equal(saved?.language, 'zh');
-  assert.equal(saved?.count, 3);
+  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 4 });
   assert.equal(passwordCalls, 1);
-  await saveConfig({ ...saved!, count: 5 }, path);
+  await savePreferences({ language: 'zh', count: 5 }, path);
   await module.setupConfig(path, {
     input: async ({ default: value }) => value!,
     password: async () => '',
     select: async ({ message }) => (message.includes('协议') ? 'chat-completions' : 'en'),
   });
   assert.equal((await loadConfig(path, {}))?.apiKey, 'test-key');
-  assert.equal((await loadConfig(path, {}))?.count, 5);
+  assert.equal((await loadPreferences(path)).count, 5);
 });
 
 test('setup switches a saved Chat Completions endpoint to Responses without persisting environment overrides', async (t) => {
@@ -49,11 +70,10 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
       endpoint: 'https://relay.example/custom/v1/chat/completions',
       apiKey: 'saved-key',
       model: 'saved-model',
-      language: 'zh',
-      count: 5,
     },
     path,
   );
+  await savePreferences({ language: 'zh', count: 5 }, path);
   const original = process.env.CMSG_PROTOCOL;
   process.env.CMSG_PROTOCOL = 'chat-completions';
   t.after(() => {
@@ -70,7 +90,6 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
     endpoint: 'https://relay.example/custom/v1/responses',
     apiKey: 'saved-key',
     model: 'saved-model',
-    language: 'zh',
-    count: 5,
   });
+  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 5 });
 });

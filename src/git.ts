@@ -5,9 +5,9 @@ import { join } from 'node:path';
 
 const execute = promisify(execFile);
 // Context budgets select detail, never reject a change set or omit file operations.
-const FULL_CONTEXT_BYTES = 160_000;
-const DETAIL_BYTES = 120_000;
-const FILE_DETAIL_BYTES = 24_000;
+const FULL_CONTEXT_BYTES = 24_000;
+const DETAIL_BYTES = 20_000;
+const FILE_DETAIL_BYTES = 8_000;
 export type Scope = 'auto' | 'staged' | 'worktree';
 export interface ChangedFile {
   status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
@@ -151,6 +151,8 @@ class ChangeContext {
         header,
       );
     const file = new FileChange(generated);
+    // Generated content is never useful for a short subject, even in a small diff.
+    if (generated) this.full = null;
     file.metadata.push(header);
     this.files.push(file);
     this.append(header);
@@ -256,7 +258,7 @@ async function untrackedDiff(root: string, path: string, context: ChangeContext)
   const file = context.start(`Untracked new file: ${JSON.stringify(path)}`);
   const metadata = (text: string) => {
     file.metadata.push(text);
-    context.append(text);
+    if (!file.generated) context.append(text);
   };
   if (stat.isSymbolicLink()) {
     metadata(`Symbolic link target: ${await readlink(absolute)}`);
@@ -276,7 +278,7 @@ async function untrackedDiff(root: string, path: string, context: ChangeContext)
     const stream = handle.createReadStream({ start: 0, autoClose: false });
     try {
       for await (const { line, clipped } of lines(stream, true)) {
-        context.append('+' + line, clipped);
+        if (!file.generated) context.append('+' + line, clipped);
         file.detail('+' + line, clipped);
       }
     } catch (error) {

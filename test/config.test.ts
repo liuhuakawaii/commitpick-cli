@@ -93,15 +93,11 @@ test('roundtrips config outside repository and environment overrides saved crede
       endpoint: 'https://relay.example/v1/chat/completions',
       apiKey: 'test-key',
       model: 'fast-model',
-      language: 'zh',
-      count: 3,
     },
     path,
   );
   const saved = await loadConfig(path, {});
   assert.equal(saved?.apiKey, 'test-key');
-  assert.equal(saved?.language, 'zh');
-  assert.equal(saved?.count, 3);
   const overridden = await loadConfig(path, {
     CMSG_API_KEY: 'env-key',
     CMSG_MODEL: 'env-model',
@@ -136,10 +132,7 @@ test('malformed config is reported rather than silently replaced', async (t) => 
   const path = join(dir, 'config.json');
   await writeFile(path, '{oops');
   await assert.rejects(loadConfig(path, {}), /配置/);
-  await writeFile(
-    path,
-    JSON.stringify({ endpoint: 'https://example.com', model: 'x', language: 'xx', count: 0 }),
-  );
+  await writeFile(path, JSON.stringify({ endpoint: 'https://example.com', model: '' }));
   await assert.rejects(loadConfig(path, {}), /语言|配置|数量/);
 });
 
@@ -150,5 +143,22 @@ test('environment-only configuration works without a saved key', async () => {
     CMSG_MODEL: 'local-model',
   });
   assert.equal(result?.apiKey, '');
-  assert.equal(result?.count, 3);
+});
+
+test('saved AI connection and preferences have independent ownership', async (t) => {
+  const { saveConfig, loadConfig, savePreferences, loadPreferences } = await configModule();
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-separate-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  await saveConfig(
+    { protocol: 'responses', endpoint: 'https://example.com/v1', apiKey: '', model: 'm' },
+    path,
+  );
+  assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
+  await savePreferences({ language: 'zh', count: 2 }, path);
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(saved.language, undefined);
+  assert.equal(saved.count, undefined);
+  assert.equal((await loadConfig(path, {}))?.model, 'm');
+  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 2 });
 });
