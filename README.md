@@ -209,14 +209,56 @@ GitHub Actions 已配置 Windows / Ubuntu、Node.js 22 / 24 检查矩阵；推�
 
 ## 发布到 npm
 
-包名暂定 `commitpick-cli`，命令名为 `cmsg`。发布前再次确认 npm 名称可用；也可把 `package.json` 中的 `name` 改为个人 scope，例如 `@your-name/commitpick-cli`，命令仍为 `cmsg`。
+包名为 `commitpick-cli`，命令名为 `cmsg`。`package.json` 中的 `publishConfig.registry` 指定发布到 npm 官方源，不影响日常安装依赖使用的源。
 
-1. 创建远程 Git 仓库，填写 `package.json` 的 `repository`、`homepage`、`bugs`，添加 remote 并推送。
-2. 执行 `npm run check` 和 `npm pack --dry-run`，核对打包清单。发布内容只包含 `dist`、README、LICENSE 及 npm 必需的 package.json。
-3. 执行 `npm login` 登录自己的 npm 账号。
-4. 明确准备发布后，执行 `npm publish --access public`，按 npm 提示完成认证。
-5. 发布成功后为对应提交打版本标签；后续用 `npm version patch/minor/major` 管理版本。
+### 一次性配置可信发布
 
-`prepublishOnly` 会再次执行检查，`prepack` 会构建产物。GitHub CI 不会自动发布。
+发布使用 npm [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)（OIDC），保留账号 2FA，不需要在 GitHub Secrets 中保存 `NPM_TOKEN`，也不需要在 Actions 中执行 `npm login`。
+
+先将发布配置提交并推送到 `liuhuakawaii/commitpick-cli` 的 `main` 分支，再打开 [npm 包设置](https://www.npmjs.com/package/commitpick-cli/access)，在 Trusted Publisher 区域选择 GitHub Actions，填写：
+
+| 字段                 | 值                                                         |
+| -------------------- | ---------------------------------------------------------- |
+| Organization or user | `liuhuakawaii`                                             |
+| Repository           | `commitpick-cli`                                           |
+| Workflow filename    | `publish.yml`（只填文件名）                                |
+| Environment name     | 留空（workflow 未设置 environment）                        |
+| Allowed actions      | 允许直接发布 `npm publish`，不能只允许 `npm stage publish` |
+
+保存时按 npm 提示完成 2FA。新建的可信发布配置需要在 2 天内完成首次成功发布，否则过期后需删除并重新配置，具体以 npm 页面及官方说明为准。只允许暂存发布时，仍需人工用 2FA 审批才能上线。
+
+### 发布当前版本
+
+当前版本已是 `0.4.0`，无需再执行 `npm version`。确认本次改动均已提交、工作区干净，并且官方源尚未发布 `0.4.0`，然后执行：
+
+```sh
+git push origin main
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
+```
+
+推送 `v*` tag 会触发 `Publish to npm`。流程先复用 CI 的 Windows / Ubuntu、Node.js 22 / 24 检查矩阵，全部通过后校验 tag、`package.json` 和锁文件版本一致，再在 GitHub 托管的 Ubuntu runner 上使用 Node.js 24、npm 11 发布。当前流程只接受 `v主版本.次版本.修订版本` 正式版本，不发布预发布版本。
+
+`prepublishOnly` 会再次执行检查，`prepack` 会构建产物。发布内容只包含 `dist`、README、LICENSE 及 npm 必需的 package.json。普通分支推送和 PR 只运行 CI，不发布。
+
+在 [GitHub Actions](https://github.com/liuhuakawaii/commitpick-cli/actions) 查看结果，成功后可查询官方源验证：
+
+```sh
+npm view commitpick-cli@0.4.0 version --registry=https://registry.npmjs.org/
+```
+
+### 后续版本
+
+在 `main` 分支提交完功能改动、保持工作区干净后，按变更类型执行 `npm version patch`、`npm version minor` 或 `npm version major`。该命令会同步包和锁文件版本，并创建版本提交及 tag。例如从 `0.4.0` 发布修订版本：
+
+```sh
+npm version patch
+git push origin main
+git push origin v0.4.1
+```
+
+每次只推送本次发布的 tag。npm 不允许覆盖已发布的同名同版本；若认证或检查失败且版本尚未发布，修复原因后可在 Actions 中重新运行失败任务；若需要修改源码或 workflow，应提交修改并使用新的版本和 tag。
+
+如需本地手动发布，首次登录或凭据失效时执行 `npm login --registry=https://registry.npmjs.org/`，再执行 `npm publish` 并完成认证。`publishConfig` 只在发布时生效，登录时仍需显式指定官方源；同一版本选择一种发布方式即可。
 
 MIT License.

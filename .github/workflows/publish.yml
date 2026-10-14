@@ -1,0 +1,45 @@
+name: Publish to npm
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: read
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+      - name: Validate release version
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, 'Only stable versions are supported');
+          assert.equal(process.env.GITHUB_REF_NAME, `v${pkg.version}`, 'Tag must match package.json version');
+          assert.equal(lock.version, pkg.version, 'Lockfile version must match package.json');
+          assert.equal(lock.packages[''].version, pkg.version, 'Lockfile root package version must match package.json');
+          NODE
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11 --registry=https://registry.npmjs.org/
+      - run: npm ci
+      # prepublishOnly runs check; prepack builds the files being published.
+      - name: Publish with OIDC
+        run: npm publish
