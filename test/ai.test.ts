@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { connect } from 'node:net';
 import type { Config } from '../src/config.js';
 
 async function aiModule() {
@@ -280,4 +281,111 @@ test('slow endpoint times out without an automatic second request', async (t) =>
     /超时/,
   );
   assert.equal(calls, 1);
+});
+
+test('AI requests honor environment proxies and NO_PROXY without forwarding the API key to CONNECT', async (t) => {
+  const { generateMessages } = await aiModule();
+  const names = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'];
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) delete process.env[name];
+  t.after(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  let requests = 0;
+  const server = createServer((req, res) => {
+    requests++;
+    assert.equal(req.headers.authorization, 'Bearer private-key');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages }) } }] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const tunnels: string[] = [];
+  const proxy = createServer();
+  proxy.on('connect', (req, socket, head) => {
+    tunnels.push(req.url!);
+    assert.equal(req.headers.authorization, undefined);
+    const upstream = connect(port, '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    socket.on('error', () => upstream.destroy());
+    socket.on('close', () => upstream.destroy());
+    upstream.on('error', () => socket.destroy());
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+    proxy.close();
+  });
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+  const config: Config = {
+    protocol: 'chat-completions',
+    endpoint: 'http://relay.invalid/v1/chat/completions',
+    apiKey: 'private-key',
+    model: 'm',
+    language: 'en',
+    count: 3,
+  };
+  process.env.HTTP_PROXY = proxyUrl;
+  assert.deepEqual(await generateMessages(config, 'diff'), messages);
+  assert.deepEqual(tunnels, ['relay.invalid:80']);
+  process.env.NO_PROXY = '127.0.0.1';
+  assert.deepEqual(
+    await generateMessages(
+      { ...config, endpoint: `http://127.0.0.1:${port}/v1/chat/completions` },
+      'diff',
+    ),
+    messages,
+  );
+  assert.equal(tunnels.length, 1);
+  assert.equal(requests, 2);
+  delete process.env.HTTP_PROXY;
+  delete process.env.NO_PROXY;
+  process.env.https_proxy = proxyUrl;
+  await assert.rejects(
+    generateMessages({ ...config, endpoint: 'https://relay.invalid/v1/responses' }, 'diff', {
+      timeoutMs: 1000,
+    }),
+  );
+  assert.equal(tunnels.at(-1), 'relay.invalid:443');
+  assert.equal(requests, 2, 'TLS failure must not send a model request or fall back to HTTP');
+});
+
+test('network diagnostics classify nested causes without echoing credentials or arbitrary error text', async (t) => {
+  const { generateMessages } = await aiModule();
+  const config: Config = {
+    protocol: 'responses',
+    endpoint: 'https://relay.invalid/v1/responses',
+    apiKey: 'private-key',
+    model: 'm',
+    count: 3,
+    language: 'en',
+  };
+  for (const [code, guidance] of [
+    ['ETIMEDOUT', /代理|超时/],
+    ['ENETUNREACH', /网络|代理/],
+    ['ENOTFOUND', /DNS/],
+    ['ECONNREFUSED', /拒绝/],
+    ['CERT_HAS_EXPIRED', /证书/],
+  ] as const) {
+    const cause = Object.assign(new Error('private-key https://user:password@proxy.invalid'), {
+      code,
+    });
+    const mocked = t.mock.method(globalThis, 'fetch', async () => {
+      throw new TypeError('private-key', { cause: new AggregateError([cause], 'private-key') });
+    });
+    await assert.rejects(generateMessages(config, 'diff'), (error: Error) => {
+      assert.match(error.message, new RegExp(code));
+      assert.match(error.message, guidance);
+      assert.doesNotMatch(error.message, /private-key|password/);
+      return true;
+    });
+    mocked.mock.restore();
+  }
 });

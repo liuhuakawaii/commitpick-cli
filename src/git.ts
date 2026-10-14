@@ -9,11 +9,17 @@ const FULL_CONTEXT_BYTES = 160_000;
 const DETAIL_BYTES = 120_000;
 const FILE_DETAIL_BYTES = 24_000;
 export type Scope = 'auto' | 'staged' | 'worktree';
+export interface ChangedFile {
+  status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
+  path: string;
+  previousPath?: string;
+}
 export interface Changes {
   scope: Exclude<Scope, 'auto'>;
   diff: string;
   root: string;
   summarized: boolean;
+  files: ChangedFile[];
 }
 
 function gitOptions(cwd: string) {
@@ -285,7 +291,26 @@ async function untrackedDiff(root: string, path: string, context: ChangeContext)
   }
 }
 
-export async function collectChanges(cwd: string, requested: Scope = 'auto'): Promise<Changes> {
+async function changedFiles(root: string, args: string[]): Promise<ChangedFile[]> {
+  const fields = (await git(root, [...args, '--name-status', '-z', '--'])).split('\0');
+  const files: ChangedFile[] = [];
+  for (let i = 0; i < fields.length - 1;) {
+    const status = fields[i++]!.charAt(0);
+    if (!['A', 'M', 'D', 'R', 'C', 'T'].includes(status))
+      throw new Error('Git 返回了无法识别的文件操作。');
+    const first = fields[i++]!;
+    if (status === 'R' || status === 'C')
+      files.push({ status, previousPath: first, path: fields[i++]! });
+    else files.push({ status: status as ChangedFile['status'], path: first });
+  }
+  return files;
+}
+
+export async function collectChanges(
+  cwd: string,
+  requested: Scope = 'auto',
+  options: { metadataOnly?: boolean } = {},
+): Promise<Changes> {
   let root: string;
   try {
     root = (await git(cwd, ['rev-parse', '--show-toplevel'])).trim();
@@ -305,11 +330,12 @@ export async function collectChanges(cwd: string, requested: Scope = 'auto'): Pr
     '--find-renames',
     '--unified=3',
   ];
-  let context = new ChangeContext();
-  if (requested !== 'worktree') await readPatch(root, [...diffArgs, '--cached', '--'], context);
-  const scope = requested === 'auto' ? (context.files.length ? 'staged' : 'worktree') : requested;
+  let args = [...diffArgs, '--cached'];
+  let files = requested !== 'worktree' ? await changedFiles(root, args) : [];
+  const scope = requested === 'auto' ? (files.length ? 'staged' : 'worktree') : requested;
+  let untracked: string[] = [];
   if (scope === 'staged') {
-    if (!context.files.length)
+    if (!files.length)
       throw new Error('暂存区没有改动，请先 git add <文件>，或使用 cmsg --worktree。');
   } else {
     let base = 'HEAD';
@@ -319,13 +345,17 @@ export async function collectChanges(cwd: string, requested: Scope = 'auto'): Pr
       if ((error as { code?: number }).code !== 128) throw error;
       base = (await git(root, ['hash-object', '-t', 'tree', '--stdin'])).trim();
     }
-    context = new ChangeContext();
-    await readPatch(root, [...diffArgs, base, '--'], context);
-    const files = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z']))
+    args = [...diffArgs, base];
+    files = await changedFiles(root, args);
+    untracked = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z']))
       .split('\0')
       .filter(Boolean);
-    for (const file of files) await untrackedDiff(root, file, context);
+    for (const path of untracked) files.push({ status: 'A', path });
   }
-  if (!context.files.length) throw new Error('没有可生成提交信息的改动。');
-  return { scope, root, ...context.render() };
+  if (!files.length) throw new Error('没有可生成提交信息的改动。');
+  if (options.metadataOnly) return { scope, root, files, diff: '', summarized: false };
+  const context = new ChangeContext();
+  await readPatch(root, [...args, '--'], context);
+  for (const file of untracked) await untrackedDiff(root, file, context);
+  return { scope, root, files, ...context.render() };
 }

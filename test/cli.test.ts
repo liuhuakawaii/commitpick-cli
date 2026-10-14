@@ -30,8 +30,14 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   await writeFile(join(cwd, 'hello.ts'), 'export const hello = true;\n');
   let calls = 0;
   let lastDiff = '';
+  let responseStatus = 200;
   const server = createServer(async (req, res) => {
     calls++;
+    if (responseStatus !== 200) {
+      res.writeHead(responseStatus);
+      res.end('private upstream error');
+      return;
+    }
     let body = '';
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
@@ -117,9 +123,23 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   assert.match(JSON.parse(responses.stdout).messages[0], /增加/);
   assert.equal(calls, 6);
   assert.equal(git('status', '--porcelain'), status);
+  responseStatus = 503;
+  await assert.rejects(
+    run(['--json'], cwd, env),
+    (error: Error & { stdout: string; stderr: string }) => {
+      assert.equal(error.stdout, '');
+      assert.match(error.stderr, /503/);
+      assert.doesNotMatch(error.stderr, /本地规则|private upstream error/);
+      return true;
+    },
+  );
+  assert.equal(calls, 7);
+  const offline = await run(['--local', '--json'], cwd, env);
+  assert.equal(JSON.parse(offline.stdout).source, 'local');
+  assert.equal(calls, 7, 'explicit local mode must not contact the configured AI');
 });
 
-test('non-interactive missing config fails with setup instruction', async (t) => {
+test('missing config generates local candidates without setup or network and preserves Git', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   execFileSync('git', ['init', '-q'], { cwd });
@@ -132,10 +152,21 @@ test('non-interactive missing config fails with setup instruction', async (t) =>
     CMSG_API_KEY: '',
     CMSG_PROTOCOL: '',
   };
-  await assert.rejects(run([], cwd, env), (error: Error & { stderr: string }) => {
-    assert.match(error.stderr, /cmsg setup/);
-    return true;
+  const before = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' });
+  const result = await run(['zh', '--json'], cwd, env);
+  const data = JSON.parse(result.stdout);
+  assert.equal(data.source, 'local');
+  assert.equal(data.messages.length, 3);
+  assert.match(data.messages[0], /file.ts/);
+  assert.match(result.stderr, /本地规则/);
+  assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' }), before);
+  const explicit = await run(['--local', '--pick', '2', '-n', '5'], cwd, {
+    ...env,
+    CMSG_BASE_URL: 'invalid',
+    CMSG_MODEL: 'm',
   });
+  assert.match(explicit.stdout, /^chore: /);
+  await assert.rejects(run(['--local', '--hint', 'invent intent'], cwd, env), /--hint/);
 });
 
 test('test command uses a fixed sample outside Git for both protocols and keeps JSON and keys clean', async (t) => {

@@ -1,6 +1,6 @@
 # commitpick-cli
 
-输入 `cmsg`，根据 Git 改动生成 3 条标准提交信息，方向键选择，回车复制。支持中英文和自定义 AI 中转地址。
+输入 `cmsg`，根据 Git 改动生成 3 条标准提交信息，方向键选择，回车复制。无需 Key 即可使用本地规则；配置 AI 后可生成更具体的语义描述。支持中英文和自定义 AI 中转地址。
 
 ```text
 $ cmsg zh
@@ -34,7 +34,20 @@ npm link
 npm install -g commitpick-cli
 ```
 
-## 首次配置
+## 零配置使用
+
+安装后直接在有改动的 Git 仓库运行 `cmsg`。没有 AI 配置时，自动使用本地规则，不要求 Key、不调用网络、不弹出配置向导。
+
+```sh
+cmsg zh --local         # 即使已配置 AI，也显式使用本地规则
+cmsg --local --json     # 供脚本使用，source 为 local
+```
+
+本地规则只读取文件操作清单，根据新增、修改、删除、重命名、复制和类型变更给出同一组改动的不同表述。纯文档、测试、CI 变更使用 `docs`、`test`、`ci`，其余使用 `chore`；不分析代码含义、不推断 `fix` 或 `feat`。长路径或较复杂的操作组合会使用操作计数：`A` 新增、`M` 修改、`D` 删除、`R` 重命名、`C` 复制、`T` 类型变更。候选仍满足单行、不重复、最多 100 字符的约束。
+
+本地模式默认英文、3 条候选，使用 `zh` / `--lang`、`--count` 调整。显式 `--local` 不读取 AI 配置，因此配置损坏或环境变量错误也不会阻碍本地使用。`--hint` 只适用于 AI 模式。已配置的 AI 请求失败时会报告错误，不静默降级；可再次使用 `--local`。
+
+## 配置 AI（可选）
 
 ```sh
 cmsg setup
@@ -84,6 +97,20 @@ cmsg test
 
 HTTP 403 表示服务端拒绝访问，不能单凭状态码确定是 Key、模型、协议还是中转站访问限制。请先核对 `cmsg config`，再运行 `cmsg test`；需要具体拒绝原因时查看中转站日志或联系服务商。程序不会自动尝试其他协议或重复请求。
 
+### 代理与连接诊断
+
+Windows 系统代理不会自动用于请求。如果浏览器可以连接而 `cmsg` 连接超时，请显式设置代理地址。以下仅影响当前 PowerShell 会话，端口应与代理软件中的 HTTP / mixed 端口一致：
+
+```powershell
+$env:HTTPS_PROXY = 'http://127.0.0.1:7897'
+$env:NO_PROXY = 'localhost,127.0.0.1,::1'
+cmsg test
+```
+
+支持 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，小写优先；只设置 `HTTP_PROXY` 时也用于 HTTPS。`NO_PROXY` 指定需要直连的主机，`*` 表示全部直连。无需 `NODE_USE_ENV_PROXY`，兼容 Node.js 22.13。代理配置不会保存到 AI 配置中。
+
+连接失败会显示已知的底层错误码，例如 `ENOTFOUND`（DNS）、`ECONNREFUSED`（连接拒绝）、`ETIMEDOUT`（连接超时）和证书错误，并给出对应检查方向。不会输出 Key、代理凭据或原始错误正文。
+
 ## 日常使用
 
 ```sh
@@ -95,12 +122,13 @@ cmsg -n 1             # 只生成 1 条候选（支持 1–5 条）
 cmsg -s               # 严格只读暂存区
 cmsg -w               # 工作区全部待提交改动预览
 cmsg -p               # 打印全部候选，不选择、不复制
+cmsg --local          # 使用零配置本地规则
 cmsg --hint "修复重复点击引起的重复提交"
 cmsg --pick 2 -c      # 直接复制第 2 条候选
 cmsg --help
 ```
 
-候选是**同一次提交的不同表述**，不是自动拆成 3 次提交。`fix`、`feat`、`refactor` 等类型由实际改动确定，scope 可选。中文模式仍使用英文类型及 ASCII 冒号，如 `fix(auth): 避免重复刷新令牌`。
+候选是**同一次提交的不同表述**，不是自动拆成 3 次提交。AI 模式中的 `fix`、`feat`、`refactor` 等类型由模型根据实际改动确定，scope 可选。中文模式仍使用英文类型及 ASCII 冒号，如 `fix(auth): 避免重复刷新令牌`。
 
 ### 改动范围
 
@@ -128,6 +156,7 @@ cmsg --pick 1 -c       # 非交互环境：输出并复制第 1 条
 ```json
 {
   "scope": "staged",
+  "source": "ai",
   "messages": [
     "fix(auth): prevent duplicate token refresh requests",
     "fix(auth): reuse the pending refresh promise",
@@ -136,7 +165,9 @@ cmsg --pick 1 -c       # 非交互环境：输出并复制第 1 条
 }
 ```
 
-无 TTY 时默认打印候选，不等待交互输入。`--json`、`--print` 与复制/直接选择参数互斥。生成、连接或格式错误返回非零退出码，Ctrl+C 取消菜单返回 130。剪贴板失败时消息仍会输出，并返回错误。
+`source` 区分 `ai` 与 `local`。无 TTY 时默认打印候选，不等待交互输入。`--json`、`--print` 与复制/直接选择参数互斥。生成、连接或格式错误返回非零退出码，Ctrl+C 取消菜单返回 130。剪贴板失败时消息仍会输出，并返回错误。
+
+Windows 文本复制使用系统 `clip.exe`，以不带 BOM 的 UTF-16LE 传入提交信息，避免 PowerShell 启动、控制台编码乱码和不可见的 BOM 字符。复制最多等待 2 秒，超时会终止复制进程并提示手工复制；其他平台继续使用 clipboardy。`cmsg --print` 可完全跳过选择和复制。
 
 ## 配置位置与环境变量
 
@@ -172,7 +203,7 @@ npm run check
 npm pack --dry-run
 ```
 
-`check` 包括格式检查、TypeScript 类型检查、自动化测试和构建。测试通过真实临时 Git 仓库及本地模拟 Responses / Chat Completions 服务覆盖部分暂存、空仓库、未跟踪文件、删除、重命名、中英文请求、协议切换、旧配置兼容、固定示例测试、超时及错误响应，不需要真实 Key。真实模型语义准确性和服务商延迟需要配置后另行验证。
+`check` 包括格式检查、TypeScript 类型检查、自动化测试和构建。测试通过真实临时 Git 仓库、本地模拟 Responses / Chat Completions 服务和 HTTP CONNECT 代理覆盖范围语义、中英文候选、本地规则、协议切换、代理与直连、超时及脱敏错误。Windows 复制测试使用真实子进程验证 Unicode 输入、超时终止和失败路径，不改动系统剪贴板。真实剪贴板、交互式菜单、模型语义准确性和服务商延迟需要额外验证。
 
 GitHub Actions 已配置 Windows / Ubuntu、Node.js 22 / 24 检查矩阵；推送到 GitHub 后运行。
 

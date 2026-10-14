@@ -28,6 +28,52 @@ async function repo(t: { after: (fn: () => Promise<void>) => void }, initial = t
   return { cwd, git };
 }
 
+test('metadata-only collection preserves staged scope, UTF-8 renames and net worktree changes', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  git('mv', 'app.ts', '新 文件.ts');
+  await writeFile(join(cwd, 'huge.bin'), Buffer.alloc(2_000_000));
+  const before = git('status', '--porcelain=v1');
+  const staged = await collect(cwd, 'auto', { metadataOnly: true });
+  assert.equal(staged.scope, 'staged');
+  assert.equal(staged.diff, '');
+  assert.deepEqual(staged.files, [{ status: 'R', path: '新 文件.ts', previousPath: 'app.ts' }]);
+  const worktree = await collect(cwd, 'worktree', { metadataOnly: true });
+  assert.equal(worktree.diff, '');
+  assert.deepEqual(worktree.files, [
+    { status: 'R', path: '新 文件.ts', previousPath: 'app.ts' },
+    { status: 'A', path: 'huge.bin' },
+  ]);
+  assert.equal(git('status', '--porcelain=v1'), before);
+  git('mv', '新 文件.ts', 'app.ts');
+  await writeFile(join(cwd, 'app.ts'), 'staged intermediate\n');
+  git('add', 'app.ts');
+  await writeFile(join(cwd, 'app.ts'), 'export const value = "original";\n');
+  await rm(join(cwd, 'huge.bin'));
+  await assert.rejects(collect(cwd, 'worktree', { metadataOnly: true }), /没有.*改动/);
+});
+
+test('metadata-only collection handles unborn repositories and deletions', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t, false);
+  await writeFile(join(cwd, 'first.ts'), 'first\n');
+  assert.deepEqual((await collect(cwd, 'auto', { metadataOnly: true })).files, [
+    { status: 'A', path: 'first.ts' },
+  ]);
+  git('add', '.');
+  assert.deepEqual((await collect(cwd, 'staged', { metadataOnly: true })).files, [
+    { status: 'A', path: 'first.ts' },
+  ]);
+  assert.deepEqual((await collect(cwd, 'worktree', { metadataOnly: true })).files, [
+    { status: 'A', path: 'first.ts' },
+  ]);
+  git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'initial');
+  await rm(join(cwd, 'first.ts'));
+  assert.deepEqual((await collect(cwd, 'auto', { metadataOnly: true })).files, [
+    { status: 'D', path: 'first.ts' },
+  ]);
+});
+
 test('auto scope reads index content only, including partially staged files', async (t) => {
   const collect = await collector();
   const { cwd, git } = await repo(t);
