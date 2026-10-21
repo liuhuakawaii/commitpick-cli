@@ -8,6 +8,7 @@ import {
   loadPreferences,
   type AIProvider,
   type Language,
+  type ProviderProxyMode,
   type Protocol,
 } from './config.js';
 
@@ -130,6 +131,15 @@ export async function setupConfig(
           { name: 'Chat Completions（聊天补全兼容接口）', value: 'chat-completions' },
         ],
       })) as Protocol);
+  const proxyMode = (await ui.select({
+    message: '网络连接方式（失败时按当前配置回退）',
+    default: previous?.proxyMode ?? 'auto',
+    choices: [
+      { name: '自动：环境代理 → 系统代理 → 直连', value: 'auto' },
+      { name: '强制代理：只使用环境或系统代理', value: 'proxy' },
+      { name: '强制直连：不使用任何代理', value: 'direct' },
+    ],
+  })) as ProviderProxyMode;
   const address = free
     ? freeEndpoint
     : await ui.input({
@@ -198,6 +208,7 @@ export async function setupConfig(
     apiKey: keyValue(key),
     model: model.trim(),
     timeoutMs: Math.round(Number(timeout) * 1000),
+    ...(proxyMode !== 'auto' ? { proxyMode } : {}),
   };
   const updated = [...providers];
   if (index < 0) updated.push(config);

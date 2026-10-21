@@ -29,11 +29,11 @@
 - 二进制和非 UTF-8 新文件只提供元数据。大文件流式读取，避免完整缓冲构建产物。
 - `--json` 的 stdout 只能是 JSON；进度和范围写 stderr。API Key 不出现在输出中。
 - 配置存于用户配置目录，不存进项目。`CMSG_CONFIG` 可隔离测试配置。语言与数量独立保存在 `<配置路径>.preferences.json`，旧 AI 文件中的 language/count 不决定生成默认值；`--local` 不读取 AI 配置。显式 reset 先备份再替换。
-- `providers` 数组顺序决定优先级，名称唯一，来源独立保存协议、地址、Key、模型及 timeoutMs（默认 30000，范围 1–120000）。旧单来源以 default 名称只读兼容，下次保存升级。设置 AI 环境变量覆盖时仅使用覆盖后的首个来源，不回退到保存列表；CMSG_CONFIG 仅选择配置路径。
+- `providers` 数组顺序决定优先级，名称唯一，来源独立保存协议、地址、Key、模型、timeoutMs 及可选 proxyMode（auto/proxy/direct，默认 auto）。旧单来源以 default 名称只读兼容，下次保存升级。设置 AI 环境变量覆盖时仅使用覆盖后的首个来源，不回退到保存列表；CMSG_CONFIG 仅选择配置路径。
 - `--preview` 不读取 AI 配置、不调用模型，显示本次文件范围及待发送 diff；`--files` 在 stderr 列出文件。生成 JSON 附带对应的 languages 和 AI 成功来源 provider（不含 Key），usage 仅采用成功来源实际返回的数值，不表示整条回退链费用。
 - 完整 diff 阈值 24,000 bytes，源码细节预算 20,000 bytes；文件清单和统计另计，不能声称总输入有严格上限。构建产物和锁文件无论大小始终省略正文。
 - 一次生成顺序尝试来源，每个来源最多请求一次；超时、网络或 HTTP 错误、未完成响应和候选格式错误触发下一来源，成功即停止，全部失败报错，不回退本地规则。stderr 显示尝试与失败，不输出原始服务商错误或 Key。菜单重新生成只在用户显式选择后发起，复用快照并从首个来源重试，全部失败保留已有候选。
-- AI 请求优先使用 HTTP_PROXY / HTTPS_PROXY（小写优先）；Windows 未显式设置代理变量时自动读取当前用户 Internet Settings 中的静态系统代理，并保留本机地址及系统绕过规则。NO_PROXY 补充绕过规则，`*` 强制直连；PAC 只显示诊断并直连，不执行脚本。代理失败不自动重试或改用直连。显示代理来源、白名单网络错误码和检查方向，不输出原始错误文本或代理凭据；请求结束销毁代理连接。
+- AI 请求按来源的 proxyMode 选择网络路径：auto 在单来源 timeoutMs 总预算内依次尝试 HTTP_PROXY / HTTPS_PROXY（小写优先）、Windows 当前用户 Internet Settings 中的静态系统代理和直连；proxy 只使用代理，direct 只直连。保留本机地址及系统绕过规则，NO_PROXY 补充绕过规则，`*` 强制直连；PAC 只显示诊断并直连，不执行脚本。只对网络连接失败和超时尝试下一路径，不重复请求 HTTP、JSON 或候选格式错误。显示代理来源、白名单网络错误码和检查方向，不输出原始错误文本或代理凭据；请求结束销毁代理连接。
 - `protocol` 支持 `responses` 和 `chat-completions`；旧配置未指定协议时，从完整接口后缀推断，否则保持 Chat Completions。显式协议会替换已知接口后缀，保留路径前缀；不自动探测或重试其他协议。
 - Responses 使用非流式请求及 `store: false`，只接受完成状态中的 assistant 文本。`cmsg test` 使用固定示例按同一优先级回退，成功即停止，不读取 Git 或仓库文件；评估脚本也复用回退流程并记录实际尝试次数。
 

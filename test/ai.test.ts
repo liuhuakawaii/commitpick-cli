@@ -378,6 +378,53 @@ test('slow endpoint times out without an automatic second request', async (t) =>
   assert.equal(calls, 1);
 });
 
+test('auto mode retries a failed environment route through direct access within one budget', async (t) => {
+  const { generateMessages } = await aiModule();
+  const saved = {
+    HTTP_PROXY: process.env.HTTP_PROXY,
+    HTTPS_PROXY: process.env.HTTPS_PROXY,
+    CMSG_PROXY_MODE: process.env.CMSG_PROXY_MODE,
+  };
+  process.env.HTTP_PROXY = 'http://127.0.0.1:1';
+  delete process.env.HTTPS_PROXY;
+  process.env.CMSG_PROXY_MODE = 'auto';
+  t.after(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  let calls = 0;
+  const routes: string[] = [];
+  const mocked = t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    if (calls === 1)
+      throw new TypeError('connect failed', {
+        cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+      });
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ messages }) } }] }),
+    );
+  });
+  const result = await generateMessages(
+    {
+      protocol: 'chat-completions',
+      endpoint: 'http://127.0.0.1:12345/v1/chat/completions',
+      apiKey: '',
+      model: 'm',
+      language: 'en',
+      count: 3,
+    },
+    'diff',
+    { timeoutMs: 1000, onRoute: (description) => routes.push(description) },
+  );
+  assert.deepEqual(result, messages);
+  assert.equal(calls, 2);
+  assert.match(routes[0]!, /环境变量代理/);
+  assert.match(routes.at(-1)!, /直连/);
+  mocked.mock.restore();
+});
+
 test('AI requests honor environment proxies and NO_PROXY without forwarding the API key to CONNECT', async (t) => {
   const { generateMessages } = await aiModule();
   const names = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'];

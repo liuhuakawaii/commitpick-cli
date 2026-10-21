@@ -132,9 +132,11 @@ $env:NO_PROXY = 'localhost,127.0.0.1,::1'
 cmsg test
 ```
 
-支持上述变量的小写形式，小写优先；只设置 `HTTP_PROXY` 时也用于 HTTPS。Windows 静态代理支持统一地址、按 HTTP/HTTPS 分开的地址，以及通配符、端口和 `<local>` 绕过规则。仅配置 PAC 脚本时会提示并直连；需要代理时可显式指定 HTTP / mixed 地址。macOS / Linux 使用环境变量或系统级网络隧道，不自动读取桌面代理设置。无需 `NODE_USE_ENV_PROXY`，兼容 Node.js 22.13。代理配置不会保存到 AI 配置中，也不会因代理失败自动重试或改用直连。
+支持上述变量的小写形式，小写优先；只设置 `HTTP_PROXY` 时也用于 HTTPS。Windows 静态代理支持统一地址、按 HTTP/HTTPS 分开的地址，以及通配符、端口和 `<local>` 绕过规则。仅配置 PAC 脚本时会提示并直连；需要代理时可显式指定 HTTP / mixed 地址。macOS / Linux 使用环境变量或系统级网络隧道，不自动读取桌面代理设置。无需 `NODE_USE_ENV_PROXY`，兼容 Node.js 22.13。代理配置不会保存到 AI 配置中。
 
-需要临时覆盖自动选择时，可设置 `CMSG_PROXY_MODE`：默认 `auto` 按环境变量、Windows 系统代理、直连的顺序选择；`direct` 强制直连；`system` 忽略显式代理变量并只使用 Windows 静态系统代理。它只影响当前进程，不会保存配置。程序不会同时发起代理和直连请求，也不会在一次请求失败后偷偷切换路径。
+每个来源可以单独设置连接方式；省略 `proxyMode` 等同 `auto`。`auto` 在本来源的总超时预算内，连接或超时失败时依次尝试环境代理、Windows 静态系统代理和直连；HTTP、JSON 或候选格式错误不会在同一来源内重复请求。`proxy` 只使用可用代理，`direct` 只直连。程序不会并发发起这些请求。
+
+需要临时覆盖自动选择时，可设置 `CMSG_PROXY_MODE`：`auto` 使用上述有界回退链，`proxy` 只使用代理，`direct` 强制直连；`system` 忽略显式代理变量并只使用 Windows 静态系统代理。它只影响当前进程，不会保存配置。provider 的 `proxyMode` 优先于这个环境变量。
 
 ```powershell
 $env:CMSG_PROXY_MODE = 'direct'
@@ -220,14 +222,14 @@ Windows 文本复制使用系统 `clip.exe`，以不带 BOM 的 UTF-16LE 传入�
 
 Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为 `0600`，Windows 继承用户目录权限。也可通过环境变量提供 Key。环境变量优先于保存的设置，`setup` 不会持久化临时环境变量。
 
-| 环境变量          | 作用                                           |
-| ----------------- | ---------------------------------------------- |
-| `CMSG_PROTOCOL`   | 覆盖协议：`responses` 或 `chat-completions`    |
-| `CMSG_BASE_URL`   | 覆盖 AI 地址，接受与 setup 相同的格式          |
-| `CMSG_API_KEY`    | 覆盖 API Key，允许空值                         |
-| `CMSG_MODEL`      | 覆盖模型名                                     |
-| `CMSG_PROXY_MODE` | 代理模式：`auto`、`direct` 或 `system`         |
-| `CMSG_CONFIG`     | 指定配置文件完整路径，可用于多套配置和隔离测试 |
+| 环境变量          | 作用                                            |
+| ----------------- | ----------------------------------------------- |
+| `CMSG_PROTOCOL`   | 覆盖协议：`responses` 或 `chat-completions`     |
+| `CMSG_BASE_URL`   | 覆盖 AI 地址，接受与 setup 相同的格式           |
+| `CMSG_API_KEY`    | 覆盖 API Key，允许空值                          |
+| `CMSG_MODEL`      | 覆盖模型名                                      |
+| `CMSG_PROXY_MODE` | 代理模式：`auto`、`proxy`、`direct` 或 `system` |
+| `CMSG_CONFIG`     | 指定配置文件完整路径，可用于多套配置和隔离测试  |
 
 同时提供 `CMSG_BASE_URL` 和 `CMSG_MODEL` 时，无需运行 setup。设置任一 AI 环境覆盖后，本次仅使用覆盖后的最高优先级来源，不回退；`CMSG_CONFIG` 本身只是文件路径，不关闭回退。通用偏好单独保存到 `<配置文件路径>.preferences.json`，AI 配置损坏不影响 `--local`。旧单来源配置以 `default` 名称兼容读取，不在读取时改写文件；下次保存升级为 `providers` 数组。旧文件的 `language` / `count` 不再决定默认输出。
 
@@ -242,7 +244,8 @@ Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为
       "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "apiKey": "YOUR_OPENROUTER_KEY",
       "model": "openrouter/free",
-      "timeoutMs": 10000
+      "timeoutMs": 10000,
+      "proxyMode": "auto"
     },
     {
       "name": "paid",
@@ -250,13 +253,14 @@ Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为
       "endpoint": "https://relay.example/v1/responses",
       "apiKey": "YOUR_PAID_KEY",
       "model": "YOUR_MODEL",
-      "timeoutMs": 30000
+      "timeoutMs": 30000,
+      "proxyMode": "direct"
     }
   ]
 }
 ```
 
-名称必须唯一，使用 1–40 个英文字母、数字、点、下划线或连字符。`timeoutMs` 是 1–120000 的整数，省略时为 30000。空列表恢复无 AI 配置的本地模式。移除来源前自动备份原列表。
+名称必须唯一，使用 1–40 个英文字母、数字、点、下划线或连字符。`timeoutMs` 是 1–120000 的整数，省略时为 30000；`proxyMode` 可选值为 `auto`、`proxy`、`direct`，省略时为 `auto`。`auto` 的多个网络路径共享同一个 `timeoutMs` 总预算。空列表恢复无 AI 配置的本地模式。移除来源前自动备份原列表。
 
 ```sh
 cmsg config --lang both --count 4  # 保存偏好，无需配置 AI

@@ -33,11 +33,12 @@ test('free cloud setup fixes endpoint and model and persists an independently na
         assert.ok(choices.some((choice) => choice.value === 'custom'));
         return 'openrouter-free';
       }
+      if (message.includes('连接方式')) return 'auto';
       assert.match(message, /语言/);
       return 'both';
     },
   });
-  assert.equal(selections.length, 2);
+  assert.equal(selections.length, 3);
   assert.deepEqual(await loadConfig(path, {}), [
     {
       name: 'provider-1',
@@ -158,7 +159,13 @@ test('explicit reset backs up malformed configuration before replacing it', asyn
             : value!,
       password: async () => '',
       select: async ({ message }) =>
-        message.includes('来源') ? 'custom' : message.includes('协议') ? 'responses' : 'both',
+        message.includes('来源')
+          ? 'custom'
+          : message.includes('协议')
+            ? 'responses'
+            : message.includes('连接方式')
+              ? 'auto'
+              : 'both',
     },
     { reset: true },
   );
@@ -184,7 +191,13 @@ test('setup asks for address, masked key, model and language; preserves saved ke
       return 'test-key';
     },
     select: async ({ message }) =>
-      message.includes('来源') ? 'custom' : message.includes('协议') ? 'chat-completions' : 'zh',
+      message.includes('来源')
+        ? 'custom'
+        : message.includes('协议')
+          ? 'chat-completions'
+          : message.includes('连接方式')
+            ? 'auto'
+            : 'zh',
   });
   const saved = await loadConfig(path, {});
   assert.equal(saved?.[0]?.endpoint, 'https://relay.example/v1/chat/completions');
@@ -203,7 +216,9 @@ test('setup asks for address, masked key, model and language; preserves saved ke
           ? 'custom'
           : message.includes('协议')
             ? 'chat-completions'
-            : 'en',
+            : message.includes('连接方式')
+              ? 'auto'
+              : 'en',
   });
   assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'test-key');
   assert.equal((await loadPreferences(path)).count, 5);
@@ -240,7 +255,9 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
           ? 'custom'
           : message.includes('协议')
             ? 'responses'
-            : 'zh',
+            : message.includes('连接方式')
+              ? 'auto'
+              : 'zh',
   });
   assert.deepEqual(await loadConfig(path, {}), [
     {

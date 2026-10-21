@@ -2,12 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { isIP } from 'node:net';
 import { EnvHttpProxyAgent } from 'undici';
+import type { ProviderProxyMode } from './config.js';
 
 const WINDOWS_INTERNET_SETTINGS =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
 export type ProxySource = 'environment' | 'windows-system' | 'direct';
-export type ProxyMode = 'auto' | 'direct' | 'system';
+export type ProxyMode = ProviderProxyMode | 'system';
 
 export interface WindowsProxySettings {
   enabled?: boolean;
@@ -24,7 +25,7 @@ export interface ProxyResolution {
   description: string;
 }
 
-interface ResolveProxyOptions {
+export interface ResolveProxyOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   readSystemProxy?: () => WindowsProxySettings | undefined;
@@ -35,13 +36,17 @@ function preferredEnv(env: NodeJS.ProcessEnv, name: string): string | undefined 
 }
 
 function hasProxyEnvironment(env: NodeJS.ProcessEnv): boolean {
-  return ['HTTP_PROXY', 'HTTPS_PROXY'].some((name) => preferredEnv(env, name) !== undefined);
+  return ['HTTP_PROXY', 'HTTPS_PROXY'].some((name) => {
+    const value = preferredEnv(env, name);
+    return value !== undefined && value.trim() !== '';
+  });
 }
 
 function proxyMode(env: NodeJS.ProcessEnv): ProxyMode {
   const value = preferredEnv(env, 'CMSG_PROXY_MODE')?.trim().toLowerCase() || 'auto';
-  if (value === 'auto' || value === 'direct' || value === 'system') return value;
-  throw new Error('CMSG_PROXY_MODE 只支持 auto、direct 或 system。');
+  if (value === 'auto' || value === 'proxy' || value === 'direct' || value === 'system')
+    return value;
+  throw new Error('CMSG_PROXY_MODE 只支持 auto、proxy、direct 或 system。');
 }
 
 function normalizeProxyUri(value: string): string {
@@ -147,36 +152,24 @@ export function readWindowsSystemProxy(): WindowsProxySettings | undefined {
   };
 }
 
-export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}): ProxyResolution {
-  const env = options.env ?? process.env;
-  const noProxy = preferredEnv(env, 'NO_PROXY')?.trim() ?? '';
-  const mode = proxyMode(env);
-  const direct = (description: string): ProxyResolution => ({
+function directResolution(description: string): ProxyResolution {
+  return {
     source: 'direct',
     httpProxy: '',
     httpsProxy: '',
     noProxy: '*',
     description,
-  });
-  if (noProxy === '*') return direct('直连（NO_PROXY=*）');
-  if (mode === 'direct') return direct('直连（CMSG_PROXY_MODE=direct）');
-  if (mode === 'auto' && hasProxyEnvironment(env)) {
-    const httpValue = preferredEnv(env, 'HTTP_PROXY');
-    const httpsValue = preferredEnv(env, 'HTTPS_PROXY');
-    const httpProxy = httpValue?.trim() ?? '';
-    const httpsProxy = httpsValue?.trim() ?? httpProxy;
-    return {
-      source: 'environment',
-      httpProxy,
-      httpsProxy,
-      noProxy,
-      description: '环境变量代理（遵循 NO_PROXY）',
-    };
-  }
+  };
+}
 
+function systemResolution(
+  endpoint: string,
+  env: NodeJS.ProcessEnv,
+  options: ResolveProxyOptions,
+): ProxyResolution | undefined {
   const url = new URL(endpoint);
   if (['localhost', 'loopback', '[::1]'].includes(url.hostname) || /^127\./.test(url.hostname))
-    return direct('直连（本机地址不经过系统代理）');
+    return;
   const settings =
     (options.platform ?? process.platform) === 'win32'
       ? (options.readSystemProxy ?? readWindowsSystemProxy)()
@@ -186,15 +179,79 @@ export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}
       ? parseProxyServer(settings.proxyServer)
       : { httpProxy: '', httpsProxy: '' };
   const proxy = url.protocol === 'https:' ? parsed.httpsProxy : parsed.httpProxy;
-  if (proxy) {
-    if (bypassSystemProxy(url, settings?.proxyOverride))
-      return direct('直连（Windows 代理绕过规则）');
-    const description = `Windows 系统代理 ${displayProxy(proxy)}${noProxy ? '（遵循 NO_PROXY）' : ''}`;
-    return { source: 'windows-system', ...parsed, noProxy, description };
+  if (!proxy || bypassSystemProxy(url, settings?.proxyOverride)) return;
+  const noProxy = preferredEnv(env, 'NO_PROXY')?.trim() ?? '';
+  const description = `Windows 系统代理 ${displayProxy(proxy)}${noProxy ? '（遵循 NO_PROXY）' : ''}`;
+  return { source: 'windows-system', ...parsed, noProxy, description };
+}
+
+export function resolveProxyRoutes(
+  endpoint: string,
+  options?: ResolveProxyOptions,
+): ProxyResolution[];
+export function resolveProxyRoutes(
+  endpoint: string,
+  providerMode: ProviderProxyMode,
+  options?: ResolveProxyOptions,
+): ProxyResolution[];
+export function resolveProxyRoutes(
+  endpoint: string,
+  providerModeOrOptions?: ProviderProxyMode | ResolveProxyOptions,
+  providedOptions: ResolveProxyOptions = {},
+): ProxyResolution[] {
+  const providerMode =
+    typeof providerModeOrOptions === 'string' ? providerModeOrOptions : undefined;
+  const options =
+    typeof providerModeOrOptions === 'string' ? providedOptions : (providerModeOrOptions ?? {});
+  const env = options.env ?? process.env;
+  const noProxy = preferredEnv(env, 'NO_PROXY')?.trim() ?? '';
+  const mode: ProxyMode = providerMode ?? proxyMode(env);
+  if (noProxy === '*') return [directResolution('直连（NO_PROXY=*）')];
+  if (mode === 'direct')
+    return [
+      directResolution(
+        providerMode === undefined ? '直连（CMSG_PROXY_MODE=direct）' : '直连（provider 强制）',
+      ),
+    ];
+
+  const routes: ProxyResolution[] = [];
+  if (mode !== 'system' && hasProxyEnvironment(env)) {
+    const httpValue = preferredEnv(env, 'HTTP_PROXY');
+    const httpsValue = preferredEnv(env, 'HTTPS_PROXY');
+    const httpProxy = httpValue?.trim() ?? '';
+    const httpsProxy = httpsValue?.trim() ?? httpProxy;
+    routes.push({
+      source: 'environment',
+      httpProxy,
+      httpsProxy,
+      noProxy,
+      description: '环境变量代理（遵循 NO_PROXY）',
+    });
   }
-  return direct(
-    settings?.autoConfigUrl ? 'Windows PAC 未自动执行，当前直连' : '直连（未检测到适用的静态代理）',
-  );
+  const system = systemResolution(endpoint, env, options);
+  if (system) routes.push(system);
+
+  if (mode === 'auto') routes.push(directResolution('直连（代理失败后的回退路径）'));
+  if (mode === 'proxy' && !routes.length)
+    throw new Error('未检测到可用代理，请配置 HTTP_PROXY / HTTPS_PROXY 或 Windows 系统代理。');
+  if (mode === 'system' && !routes.length)
+    routes.push(directResolution('直连（未检测到适用的静态系统代理）'));
+
+  const seen = new Set<string>();
+  return routes.filter((route) => {
+    const key = `${route.httpProxy}|${route.httpsProxy}|${route.noProxy}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}): ProxyResolution {
+  const routes = resolveProxyRoutes(endpoint, options);
+  if (!routes.length) {
+    return directResolution('直连（未检测到适用的代理）');
+  }
+  return routes[0]!;
 }
 
 export function createProxyAgent(resolution: ProxyResolution): EnvHttpProxyAgent {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect, type AddressInfo } from 'node:net';
-import { createProxyAgent, resolveProxy } from '../src/proxy.js';
+import { createProxyAgent, resolveProxy, resolveProxyRoutes } from '../src/proxy.js';
 
 test('explicit proxy environment variables take precedence over Windows system proxy', () => {
   const result = resolveProxy('https://api.example.test/v1/responses', {
@@ -41,6 +41,39 @@ test('proxy mode can force direct access or Windows system proxy', () => {
   assert.throws(
     () => resolveProxy(endpoint, { env: { CMSG_PROXY_MODE: 'race' } }),
     /CMSG_PROXY_MODE/,
+  );
+});
+
+test('auto mode orders environment, Windows system and direct routes without duplicates', () => {
+  const routes = resolveProxyRoutes('https://api.example.test/v1/responses', {
+    env: { HTTPS_PROXY: 'http://env.example:8080' },
+    platform: 'win32',
+    readSystemProxy: () => ({ enabled: true, proxyServer: '127.0.0.1:7897' }),
+  });
+  assert.deepEqual(
+    routes.map((route) => route.source),
+    ['environment', 'windows-system', 'direct'],
+  );
+  assert.equal(new Set(routes.map((route) => route.description)).size, 3);
+});
+
+test('provider proxy mode limits routes to proxy or direct', () => {
+  const options = {
+    env: { HTTPS_PROXY: 'http://env.example:8080' },
+    platform: 'win32' as const,
+    readSystemProxy: () => ({ enabled: true, proxyServer: '127.0.0.1:7897' }),
+  };
+  assert.deepEqual(
+    resolveProxyRoutes('https://api.example.test/v1/responses', 'proxy', options).map(
+      (route) => route.source,
+    ),
+    ['environment', 'windows-system'],
+  );
+  assert.deepEqual(
+    resolveProxyRoutes('https://api.example.test/v1/responses', 'direct', options).map(
+      (route) => route.source,
+    ),
+    ['direct'],
   );
 });
 

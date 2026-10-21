@@ -51,11 +51,13 @@ export async function backupConfig(path = configPath()): Promise<string | null> 
   }
 }
 export type Protocol = 'chat-completions' | 'responses';
+export type ProviderProxyMode = 'auto' | 'proxy' | 'direct';
 export interface AIConfig {
   protocol: Protocol;
   endpoint: string;
   apiKey: string;
   model: string;
+  proxyMode?: ProviderProxyMode;
 }
 export interface Config extends AIConfig, Preferences {}
 export interface AIProvider extends AIConfig {
@@ -101,12 +103,18 @@ function validateConfig(value: unknown): AIConfig {
     throw new Error('配置缺少 AI 地址或模型名，请运行 cmsg setup。');
   if (data.apiKey !== undefined && typeof data.apiKey !== 'string')
     throw new Error('配置中的 apiKey 必须是字符串。');
+  if (
+    data.proxyMode !== undefined &&
+    !['auto', 'proxy', 'direct'].includes(data.proxyMode as string)
+  )
+    throw new Error('配置中的 proxyMode 只支持 auto、proxy 或 direct。');
   const endpoint = normalizeEndpoint(data.endpoint, data.protocol as Protocol | undefined);
   return {
     protocol: endpoint.endsWith('/responses') ? 'responses' : 'chat-completions',
     endpoint,
     apiKey: (data.apiKey as string | undefined)?.trim() ?? '',
     model: data.model.trim(),
+    ...(data.proxyMode !== undefined ? { proxyMode: data.proxyMode as ProviderProxyMode } : {}),
   };
 }
 

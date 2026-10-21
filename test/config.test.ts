@@ -109,6 +109,55 @@ test('roundtrips config outside repository and environment overrides saved crede
   assert.doesNotMatch(await readFile(path, 'utf8'), /env-key/);
 });
 
+test('provider proxy mode is optional, validated, and roundtrips independently', async (t) => {
+  const { saveConfig, loadConfig } = await configModule();
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-proxy-mode-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  await saveConfig(
+    [
+      {
+        name: 'direct',
+        protocol: 'chat-completions',
+        endpoint: 'https://direct.example/v1',
+        apiKey: '',
+        model: 'm',
+        timeoutMs: 1000,
+        proxyMode: 'direct' as const,
+      },
+      {
+        name: 'auto',
+        protocol: 'responses',
+        endpoint: 'https://auto.example/v1/responses',
+        apiKey: '',
+        model: 'm',
+        timeoutMs: 1000,
+      },
+    ],
+    path,
+  );
+  const loaded = await loadConfig(path, {});
+  assert.equal(loaded?.[0]?.proxyMode, 'direct');
+  assert.equal(loaded?.[1]?.proxyMode, undefined);
+  await assert.rejects(
+    saveConfig(
+      [
+        {
+          name: 'bad',
+          protocol: 'responses',
+          endpoint: 'https://bad.example/v1/responses',
+          apiKey: '',
+          model: 'm',
+          timeoutMs: 1000,
+          proxyMode: 'race' as never,
+        },
+      ],
+      path,
+    ),
+    /proxyMode|代理模式/,
+  );
+});
+
 test('full endpoints at the domain root keep their exact path', async () => {
   const { normalizeEndpoint } = await configModule();
   assert.equal(
