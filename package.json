@@ -1,6 +1,6 @@
 {
   "name": "commitpick-cli",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Generate and pick concise bilingual Conventional Commit messages from Git changes.",
   "type": "module",
   "bin": {
