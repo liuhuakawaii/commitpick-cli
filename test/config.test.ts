@@ -68,17 +68,17 @@ test('legacy configs stay on Chat Completions and protocol overrides do not modi
     count: 3,
   });
   await writeFile(path, original);
-  assert.equal((await loadConfig(path, {}))?.protocol, 'chat-completions');
+  assert.equal((await loadConfig(path, {}))?.[0]?.protocol, 'chat-completions');
   const result = await loadConfig(path, { CMSG_PROTOCOL: 'responses' });
-  assert.equal(result?.protocol, 'responses');
-  assert.equal(result?.endpoint, 'https://relay.example/custom/v1/responses');
+  assert.equal(result?.[0]?.protocol, 'responses');
+  assert.equal(result?.[0]?.endpoint, 'https://relay.example/custom/v1/responses');
   assert.equal(await readFile(path, 'utf8'), original);
   await assert.rejects(loadConfig(path, { CMSG_PROTOCOL: 'unknown' }), /协议/);
   await writeFile(
     path,
     JSON.stringify({ endpoint: 'https://relay.example/v1/responses', model: 'm' }),
   );
-  assert.equal((await loadConfig(path, {}))?.protocol, 'responses');
+  assert.equal((await loadConfig(path, {}))?.[0]?.protocol, 'responses');
 });
 
 test('roundtrips config outside repository and environment overrides saved credentials', async (t) => {
@@ -97,15 +97,15 @@ test('roundtrips config outside repository and environment overrides saved crede
     path,
   );
   const saved = await loadConfig(path, {});
-  assert.equal(saved?.apiKey, 'test-key');
+  assert.equal(saved?.[0]?.apiKey, 'test-key');
   const overridden = await loadConfig(path, {
     CMSG_API_KEY: 'env-key',
     CMSG_MODEL: 'env-model',
     CMSG_BASE_URL: 'https://other.example/v1',
   });
-  assert.equal(overridden?.apiKey, 'env-key');
-  assert.equal(overridden?.model, 'env-model');
-  assert.equal(overridden?.endpoint, 'https://other.example/v1/chat/completions');
+  assert.equal(overridden?.[0]?.apiKey, 'env-key');
+  assert.equal(overridden?.[0]?.model, 'env-model');
+  assert.equal(overridden?.[0]?.endpoint, 'https://other.example/v1/chat/completions');
   assert.doesNotMatch(await readFile(path, 'utf8'), /env-key/);
 });
 
@@ -142,7 +142,7 @@ test('environment-only configuration works without a saved key', async () => {
     CMSG_BASE_URL: 'http://localhost:1234/v1',
     CMSG_MODEL: 'local-model',
   });
-  assert.equal(result?.apiKey, '');
+  assert.equal(result?.[0]?.apiKey, '');
 });
 
 test('saved AI connection and preferences have independent ownership', async (t) => {
@@ -159,6 +159,6 @@ test('saved AI connection and preferences have independent ownership', async (t)
   const saved = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(saved.language, undefined);
   assert.equal(saved.count, undefined);
-  assert.equal((await loadConfig(path, {}))?.model, 'm');
+  assert.equal((await loadConfig(path, {}))?.[0]?.model, 'm');
   assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 2 });
 });

@@ -55,13 +55,34 @@ cmsg --local --json     # 供脚本使用，source 为 local
 cmsg setup
 ```
 
-依次填写 5 项：
+首次配置先选择 **AI 来源**，默认选中 **OpenRouter 免费云端**。已有配置时，向导提供「编辑已有来源」「添加来源」「调整优先级」「移除来源」；新增来源放在列表末尾。每个来源有独立名称、协议、地址、Key、模型和超时，语言与候选数量仍为通用偏好。
+
+例如先添加名为 `free` 的 OpenRouter 免费来源，再运行 `cmsg setup` 选择「添加来源」，配置名为 `paid` 的自定义 API；通过「调整优先级」依次选择 `free`、`paid`，即可先免费、失败后付费。`cmsg config` 显示实际生效的顺序，所有 Key 都会隐藏。
+
+每次生成按优先级顺序尝试，每个来源最多一次；超时、网络或 HTTP 错误、未完成响应及候选格式校验失败时尝试下一项，成功即停止。回退复用同一份 diff、hint 和语言数量，不重新读取 Git。全部来源失败则报错，不自动降级为本地规则；菜单手动重新生成会从最高优先级重新尝试，全部失败时保留已有候选。**配置了付费来源，就可能在回退时产生费用**；只保留免费来源可避免调用付费 API。
+
+### 免费云端（无需本地部署）
+
+1. 注册 OpenRouter，在 [API Keys 页面](https://openrouter.ai/settings/keys) 创建 Key。
+2. 运行 `cmsg setup`，选择 **OpenRouter 免费云端**，填写来源名称、Key、超时和默认语言。
+3. 运行 `cmsg test` 验证连接、候选格式和耗时，再在项目中运行 `cmsg`。
+
+此入口固定使用 `https://openrouter.ai/api/v1/chat/completions` 和 `openrouter/free`，不需要填写接口地址或模型名。按 [OpenRouter 官方说明](https://openrouter.ai/docs/guides/routing/routers/free-router)，路由本身和选中的免费模型均不收费，只在免费模型池中选择；具体模型会变化，不保证使用 DeepSeek 或 GPT。CLI 不向该路由传入付费候选模型，但会回退到你在列表中另外配置的来源，并在 stderr 显示每次尝试和失败原因。
+
+免费服务有额度、限流和可用性限制，高峰时可能较慢；无需部署模型，但需要网络和 OpenRouter API Key。限额以 [服务商当前规则](https://openrouter.ai/docs/api/reference/limits) 和账号状态为准。配置不会测试网络；`cmsg test`、实际生成和手动重新生成都会消耗请求额度。
+
+新增来源不继承其他来源的 Key；编辑时，只有地址仍属于同一 origin（协议、域名、端口相同）才可回车保留 Key。临时环境变量只覆盖最高优先级来源，并将它作为本次唯一来源；若设置过 `CMSG_BASE_URL`、`CMSG_MODEL`、`CMSG_PROTOCOL` 或 `CMSG_API_KEY`，请移除对应覆盖以恢复完整列表，并用 `cmsg config` 确认。
+
+### 自定义 API
+
+选择 **自定义 API** 后，填写来源名称及以下设置：
 
 1. **AI 接口协议**：Responses 或 Chat Completions。新配置默认选中 Responses；已有配置保留原协议。
 2. **AI 地址**：可填域名、Base URL 或完整接口地址。
 3. **API Key**：输入时隐藏；本地无认证服务可留空。
 4. **模型名**：填写服务商提供的准确名称。
-5. **默认语言**：English、简体中文或双语（默认 2+2）。
+5. **请求超时**：每个来源独立设置，默认 30 秒，最多 120 秒；免费来源较慢时可设置更短超时以更快回退。
+6. **默认语言**：English、简体中文或双语（默认 2+2），对所有来源生效。
 
 地址会按所选协议自动处理：
 
@@ -75,7 +96,7 @@ cmsg setup
 
 支持 OpenAI 兼容 **Responses** 和 **Chat Completions** 协议，包括兼容的中转站和本地服务。不直接支持 Anthropic Messages 或 Gemini 原生协议。模型需要能遵循 JSON 输出指令；请求不强制使用服务商特有的结构化输出参数。Responses 请求使用 `store: false`、`stream: false`；只有完成状态的文本才会作为候选解析。
 
-再次运行 `cmsg setup` 可修改配置。Key 留空会保留原值，输入 `-` 清空。配置保存不会发起模型请求；运行 `cmsg` 会把所选范围的 diff 发送给配置的地址。
+再次运行 `cmsg setup` 可管理配置。自定义 API 在同一 origin 下 Key 留空保留原值，输入 `-` 清空。配置保存不会发起模型请求；运行 `cmsg` 会把所选范围的 diff 发送给依次尝试的来源。
 
 ```sh
 cmsg config  # 查看生效配置，Key 始终隐藏
@@ -83,7 +104,7 @@ cmsg test    # 发送固定微小示例，测试连接及候选格式，不读�
 cmsg test --json  # 测试结果以 JSON 输出，诊断信息写 stderr
 ```
 
-`cmsg test` 可在任意目录运行，只发起一次模型请求，验证所选协议、模型、认证和一条 Conventional Commit 候选的格式。它会显示实际请求地址、协议和模型；失败时返回非零退出码，不输出 Key 或服务商原始错误正文。固定示例成功不代表实际大改动一定成功。
+`cmsg test` 可在任意目录运行，用固定示例按相同优先级测试，成功即停止，不逐个探测全部来源。它验证协议、模型、认证和一条 Conventional Commit 候选的格式，显示每次尝试的地址、协议和模型；全部失败时返回非零退出码，不输出 Key 或服务商原始错误正文。固定示例成功不代表实际大改动一定成功。
 
 如果中转站的 Codex 配置中写着 `wire_api = "responses"`，在 `cmsg setup` 中选择 **Responses**，填写相同 Base URL，以及该 Key 有权限使用的模型。`cmsg` 使用自己的配置，不会自动读取 Codex 配置或凭据。已有 Chat Completions 配置不会在升级时自动切换。
 
@@ -95,9 +116,9 @@ cmsg config
 cmsg test
 ```
 
-这个覆盖会沿用已有 Key 和模型，并把已知的 `/chat/completions` 后缀改为 `/responses`。测试后用 `Remove-Item Env:CMSG_PROTOCOL` 移除临时覆盖；要持久切换，请运行 `cmsg setup`。
+这个覆盖会沿用最高优先级来源的 Key 和模型，并把已知的 `/chat/completions` 后缀改为 `/responses`；本次只使用该来源，不回退到保存的其他来源。测试后用 `Remove-Item Env:CMSG_PROTOCOL` 移除临时覆盖；要持久切换，请运行 `cmsg setup`。
 
-HTTP 403 表示服务端拒绝访问，不能单凭状态码确定是 Key、模型、协议还是中转站访问限制。请先核对 `cmsg config`，再运行 `cmsg test`；需要具体拒绝原因时查看中转站日志或联系服务商。程序不会自动尝试其他协议或重复请求。
+HTTP 403 表示服务端拒绝访问，不能单凭状态码确定是 Key、模型、协议还是中转站访问限制。请先核对 `cmsg config`，再运行 `cmsg test`；需要具体拒绝原因时查看中转站日志或联系服务商。程序不会重试同一来源或为它探测其他协议，但会尝试列表中的下一来源。
 
 ### 代理与连接诊断
 
@@ -134,7 +155,7 @@ cmsg --pick 2 -c      # 直接复制第 2 条候选
 cmsg --help
 ```
 
-候选是**同一次提交的不同表述**，不是自动拆成多次提交。双语默认顺序为 English、English、中文、中文；`-n` 表示总数，奇数时英文多一条（例如 `-n 3` 为 2 EN + 1 中文，`-n 1` 为英文）。`en` / `zh` / `cn` 则全部使用指定语言。提示词要求 AI 复用同一组事实和 type/scope，但语义准确性仍需用户核对。中文候选仍使用英文类型及 ASCII 冒号。
+候选是**同一次提交的不同表述**，不是自动拆成多次提交。双语默认顺序为 English、English、中文、中文；`-n` 表示总数，奇数时英文多一条（例如 `-n 3` 为 2 EN + 1 中文，`-n 1` 为英文）。`en` / `zh` / `cn` 则全部使用指定语言。提示词要求 AI 复用同一组事实和 type/scope，使用准确的「动作 + 对象」，省去冗余说明和空泛收益；英文整行以 50 字符以内、中文描述以 8–18 字为目标，事实准确优先。100 字符硬限制仍保留，不截断模型输出。中文候选仍使用英文类型及 ASCII 冒号；语义与措辞质量仍需核对。
 
 交互菜单支持“编辑第 N 条”“补充意图后重新生成”“重新生成”和“查看本次文件范围”。重新生成由用户主动触发，会再次请求 AI，复用本次已收集的改动快照；失败时保留原候选。若仓库发生新改动，请重新运行 `cmsg` 收集。
 
@@ -151,7 +172,7 @@ cmsg --help
 
 小改动提供完整 diff，超过 24,000 bytes 或含构建产物时自动整理，源码细节预算为 20,000 bytes，保留分布在文件不同位置的片段。全部文件操作与增删行统计仍保留；这部分元数据另计，因此总输入并非严格限制为 24 KB。常见构建产物（如 `dist/`、`build/`、`public/**/assets/`、压缩 JS、source map）和锁文件始终仅提供元数据。大改动可以运行，但多个独立目的是否应合并为一次提交仍由用户判断。
 
-整理模式会在 stderr 提示，并在模型输入中标明省略内容；全部文件操作仍然保留，模型仅根据可见内容生成候选。大改动仍只调用一次模型。片段无法覆盖每一行细节，涉及重要意图时可以用 `--hint` 补充。
+整理模式会在 stderr 提示，并在模型输入中标明省略内容；全部文件操作仍然保留，模型仅根据可见内容生成候选。大改动不会额外拆分模型请求，回退时复用同一份整理结果。片段无法覆盖每一行细节，涉及重要意图时可以用 `--hint` 补充。
 
 ### 脚本使用
 
@@ -175,7 +196,7 @@ cmsg --pick 1 -c       # 非交互环境：输出并复制第 1 条
 }
 ```
 
-`source` 区分 `ai` 与 `local`。`languages` 与候选一一对应，服务商返回用量时还包含 `usage`（`inputTokens`、`outputTokens`、`totalTokens`，未提供的字段省略）。`--preview --json` 输出范围、文件清单、`diff`、`inputBytes` 和 `summarized`，不含候选、不调用 AI。`inputBytes` 仅统计 diff，不含提示词、hint 和协议包装。
+`source` 区分 `ai` 与 `local`。AI 结果还包含 `provider`（成功来源的 `name`、`protocol`、`endpoint`、`model`，不含 Key）。`languages` 与候选一一对应，成功来源返回用量时还包含 `usage`（`inputTokens`、`outputTokens`、`totalTokens`，未提供的字段省略）；它不是整个回退链的费用统计，失败请求也可能消耗额度。`--preview --json` 输出范围、文件清单、`diff`、`inputBytes` 和 `summarized`，不含候选、不调用 AI。`inputBytes` 仅统计 diff，不含提示词、hint 和协议包装。
 
 无 TTY 时默认打印候选，不等待交互输入。`--json`、`--print` 与复制/直接选择参数互斥。生成、连接或格式错误返回非零退出码，Ctrl+C 取消菜单返回 130。剪贴板失败时消息仍会输出，并返回错误。
 
@@ -199,7 +220,34 @@ Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为
 | `CMSG_MODEL`    | 覆盖模型名                                     |
 | `CMSG_CONFIG`   | 指定配置文件完整路径，可用于多套配置和隔离测试 |
 
-同时提供 `CMSG_BASE_URL` 和 `CMSG_MODEL` 时，无需运行 setup。通用偏好单独保存到 `<配置文件路径>.preferences.json`，AI 配置损坏不影响 `--local`。旧配置的地址、协议、模型与 Key 继续使用；旧文件的 `language` / `count` 不再决定默认输出，升级后默认双语 4 条。
+同时提供 `CMSG_BASE_URL` 和 `CMSG_MODEL` 时，无需运行 setup。设置任一 AI 环境覆盖后，本次仅使用覆盖后的最高优先级来源，不回退；`CMSG_CONFIG` 本身只是文件路径，不关闭回退。通用偏好单独保存到 `<配置文件路径>.preferences.json`，AI 配置损坏不影响 `--local`。旧单来源配置以 `default` 名称兼容读取，不在读取时改写文件；下次保存升级为 `providers` 数组。旧文件的 `language` / `count` 不再决定默认输出。
+
+配置文件的 `providers` 数组顺序就是优先级，例如：
+
+```json
+{
+  "providers": [
+    {
+      "name": "free",
+      "protocol": "chat-completions",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "apiKey": "YOUR_OPENROUTER_KEY",
+      "model": "openrouter/free",
+      "timeoutMs": 10000
+    },
+    {
+      "name": "paid",
+      "protocol": "responses",
+      "endpoint": "https://relay.example/v1/responses",
+      "apiKey": "YOUR_PAID_KEY",
+      "model": "YOUR_MODEL",
+      "timeoutMs": 30000
+    }
+  ]
+}
+```
+
+名称必须唯一，使用 1–40 个英文字母、数字、点、下划线或连字符。`timeoutMs` 是 1–120000 的整数，省略时为 30000。空列表恢复无 AI 配置的本地模式。移除来源前自动备份原列表。
 
 ```sh
 cmsg config --lang both --count 4  # 保存偏好，无需配置 AI
@@ -212,7 +260,7 @@ cmsg setup --reset                # 完成向导后备份旧 AI 配置并替换
 
 保存的 `protocol` 或 `CMSG_PROTOCOL` 优先决定接口后缀。没有指定协议时，完整 `/responses` 地址会识别为 Responses，其余地址默认 Chat Completions，以兼容旧配置。`cmsg config` 始终显示最终生效的协议与地址。
 
-每次生成默认只发一次请求，不自动重试，超时为 30 秒。英文和中文共用一次请求，不重复上传 diff。服务商若返回 usage，CLI 会在 stderr 显示输入、输出和总 token；没有 usage 时明确显示未返回，不把字节估算当成计费用量。输入压缩减少上下文，但实际耗时还取决于服务商、模型和输出速度；本地模式不消耗模型 token。
+只有首选来源成功时，每次生成才只发一次请求；发生失败时最多尝试全部已配置来源各一次，等待时间可能累计到各来源超时之和。每个来源在同一请求中生成全部中英文候选。成功来源若返回 usage，CLI 会在 stderr 显示输入、输出和总 token；没有 usage 时明确显示未返回，不把字节估算当成计费用量。输入压缩减少上下文，但实际耗时还取决于服务商、模型和输出速度；本地模式不消耗模型 token。
 
 ## 开发与验证
 

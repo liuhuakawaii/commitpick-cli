@@ -22,6 +22,71 @@ async function run(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
   return pending;
 }
 
+test('CLI uses ordered fallback for generation and test, reports the winner and masks every key', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'commitpick-chain-cli-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q'], { cwd });
+  await writeFile(join(cwd, 'hello.ts'), 'export const hello = true;\n');
+  const calls: string[] = [];
+  const server = createServer(async (req, res) => {
+    let text = '';
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    calls.push(body.model);
+    if (body.model === 'free') {
+      res.writeHead(429);
+      res.end('secret-free-key');
+    } else {
+      res.end(
+        JSON.stringify({
+          choices: [
+            { message: { content: JSON.stringify({ messages: ['feat: add greeting flag'] }) } },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+      );
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/chat/completions`;
+  const path = join(cwd, 'config.json');
+  await writeFile(
+    path,
+    JSON.stringify({
+      providers: ['free', 'paid', 'unused'].map((name) => ({
+        name,
+        endpoint,
+        model: name,
+        apiKey: `secret-${name}-key`,
+      })),
+    }),
+  );
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CMSG_CONFIG: path,
+    CMSG_BASE_URL: '',
+    CMSG_MODEL: '',
+    CMSG_PROTOCOL: '',
+  };
+  delete env.CMSG_API_KEY;
+  for (const args of [
+    ['--json', '--count', '1', '--lang', 'en'],
+    ['test', '--json'],
+  ]) {
+    const result = await run(args, cwd, env);
+    const data = JSON.parse(result.stdout);
+    assert.deepEqual(data.messages, ['feat: add greeting flag']);
+    assert.equal(data.provider.name, 'paid');
+    assert.match(result.stderr, /free.*429/);
+    assert.doesNotMatch(result.stdout + result.stderr, /secret-.*-key/);
+  }
+  assert.deepEqual(calls, ['free', 'paid', 'free', 'paid']);
+  const shown = await run(['config'], cwd, env);
+  assert.match(shown.stdout, /优先级/);
+  assert.doesNotMatch(shown.stdout, /secret-.*-key/);
+});
+
 test('CLI generates English/Chinese candidates through a relay, JSON is clean and Git is unchanged', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));

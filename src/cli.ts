@@ -14,12 +14,21 @@ import { collectChanges } from './git.js';
 import { setupConfig } from './setup.js';
 import { copyToClipboard } from './clipboard.js';
 import { generateLocalMessages } from './local.js';
-import type { TokenUsage } from './ai.js';
+import type { TokenUsage, ProviderIdentity } from './ai.js';
 
 const metadata = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
 ) as { version: string };
 const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+const generationDiagnostics = {
+  onAttempt: (provider: ProviderIdentity) =>
+    console.error(
+      `尝试来源：${provider.name} · ${provider.protocol} · ${provider.model}\n请求地址：${provider.endpoint}`,
+    ),
+  onFailure: (provider: ProviderIdentity, reason: string) =>
+    console.error(`来源 ${provider.name} 失败：${reason}。`),
+  onRoute: (description: string) => console.error(`网络路径：${description}`),
+};
 function countArgument(value: string): number {
   if (!/^[1-5]$/.test(value)) throw new InvalidArgumentError('请输入 1 到 5 的整数。');
   return Number(value);
@@ -152,25 +161,28 @@ const program = new Command()
         '已自动整理输入：保留全部文件变更，源码使用全文或片段，构建产物及锁文件仅保留统计。',
       );
     let usage: TokenUsage | undefined;
+    let provider: ProviderIdentity | undefined;
     const requestMessages = async (hint?: string) => {
       if (!config) return generateLocalMessages(changes.files, generation);
       console.error(
         `正在请求 AI… 输入 ${(Buffer.byteLength(changes.diff) / 1024).toFixed(1)} KiB（不含提示词；非 token 数）`,
       );
-      const { generateMessages } = await import('./ai.js');
+      const { generateWithFallback } = await import('./ai.js');
       usage = undefined;
-      const messages = await generateMessages({ ...config, ...generation }, changes.diff, {
+      provider = undefined;
+      const result = await generateWithFallback(config, generation, changes.diff, {
         hint,
-        onUsage: (value) => {
-          usage = value;
-          console.error(
-            `Token：输入 ${value.inputTokens ?? '未知'} · 输出 ${value.outputTokens ?? '未知'} · 合计 ${value.totalTokens ?? '未知'}`,
-          );
-        },
-        onRoute: (description) => console.error(`网络路径：${description}`),
+        ...generationDiagnostics,
       });
+      usage = result.usage;
+      provider = result.provider;
+      console.error(`使用来源：${provider.name}`);
+      if (usage)
+        console.error(
+          `Token（成功来源）：输入 ${usage.inputTokens ?? '未知'} · 输出 ${usage.outputTokens ?? '未知'} · 合计 ${usage.totalTokens ?? '未知'}`,
+        );
       if (!usage) console.error('服务商未返回 token 用量。');
-      return messages;
+      return result.messages;
     };
     const messages = await requestMessages(options.hint);
     console.error(`生成完成，总用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`);
@@ -183,6 +195,7 @@ const program = new Command()
             messages,
             languages: candidateLanguages(generation.language, generation.count),
             ...(usage ? { usage } : {}),
+            ...(provider ? { provider } : {}),
           },
           null,
           2,
@@ -247,14 +260,14 @@ program
     const options = command.optsWithGlobals<{ json?: boolean }>();
     const config = await loadConfig();
     if (!config) throw new Error('尚未配置 AI，请先在终端运行 cmsg setup。');
-    console.error(`测试：${config.protocol} · ${config.model}\n请求地址：${config.endpoint}`);
-    console.error('发送固定示例，不读取仓库改动。');
+    console.error('按优先级发送固定示例，成功即停止，不读取仓库改动。');
     const started = performance.now();
-    const { generateMessages } = await import('./ai.js');
-    const messages = await generateMessages(
-      { ...config, language: 'en', count: 1 },
+    const { generateWithFallback } = await import('./ai.js');
+    const result = await generateWithFallback(
+      config,
+      { language: 'en', count: 1 },
       'diff --git a/example.txt b/example.txt\nnew file mode 100644\n--- /dev/null\n+++ b/example.txt\n@@ -0,0 +1 @@\n+Hello world\n',
-      { onRoute: (description) => console.error(`网络路径：${description}`) },
+      generationDiagnostics,
     );
     console.error(
       `测试通过：连接和候选格式有效，用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`,
@@ -262,11 +275,16 @@ program
     console.log(
       options.json
         ? JSON.stringify(
-            { protocol: config.protocol, endpoint: config.endpoint, model: config.model, messages },
+            {
+              ...result.provider,
+              provider: result.provider,
+              messages: result.messages,
+              ...(result.usage ? { usage: result.usage } : {}),
+            },
             null,
             2,
           )
-        : messages[0],
+        : result.messages[0],
     );
   });
 
@@ -306,11 +324,15 @@ program
       return;
     }
     console.log(
-      JSON.stringify(
-        { ...config, ...preferences, apiKey: config.apiKey ? '[已设置]' : '[未设置]' },
-        null,
-        2,
-      ),
+      'AI 来源按以下优先级尝试（含付费来源时，回退可能产生费用）：\n' +
+        JSON.stringify(
+          {
+            providers: config.map((p) => ({ ...p, apiKey: p.apiKey ? '[已设置]' : '[未设置]' })),
+            ...preferences,
+          },
+          null,
+          2,
+        ),
     );
   });
 

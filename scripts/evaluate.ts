@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from '../src/config.js';
-import { generateMessages, type TokenUsage } from '../src/ai.js';
+import { generateWithFallback, type TokenUsage, type ProviderIdentity } from '../src/ai.js';
 
 const args = process.argv.slice(2);
 if (args.some((arg) => arg !== '--run')) throw new Error('用法：npm run evaluate [-- --run]');
@@ -23,16 +23,26 @@ for (const fixture of fixtures) {
   const started = performance.now();
   let usage: TokenUsage | undefined;
   let messages: string[] | undefined;
+  let provider: ProviderIdentity | undefined;
   let failed = false;
   if (config) {
-    requests++;
     console.error(`评估 ${fixture.id}…`);
     try {
-      messages = await generateMessages({ ...config, language: 'both', count: 4 }, fixture.diff, {
-        onUsage: (value) => {
-          usage = value;
+      const result = await generateWithFallback(
+        config,
+        { language: 'both', count: 4 },
+        fixture.diff,
+        {
+          onAttempt: (source) => {
+            requests++;
+            console.error(`来源：${source.name}`);
+          },
+          onFailure: (source, reason) => console.error(`${source.name}：${reason}`),
         },
-      });
+      );
+      messages = result.messages;
+      usage = result.usage;
+      provider = result.provider;
     } catch (error) {
       failed = true;
       process.exitCode = 1;
@@ -47,7 +57,7 @@ for (const fixture of fixtures) {
     checks: fixture.checks,
     semanticReview: null,
     ...(live
-      ? { elapsedMs: Math.round(performance.now() - started), failed, messages, usage }
+      ? { elapsedMs: Math.round(performance.now() - started), failed, messages, usage, provider }
       : {}),
   });
 }

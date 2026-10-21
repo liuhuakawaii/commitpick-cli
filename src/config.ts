@@ -58,6 +58,10 @@ export interface AIConfig {
   model: string;
 }
 export interface Config extends AIConfig, Preferences {}
+export interface AIProvider extends AIConfig {
+  name: string;
+  timeoutMs: number;
+}
 
 export function configPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.CMSG_CONFIG) return env.CMSG_CONFIG;
@@ -106,10 +110,28 @@ function validateConfig(value: unknown): AIConfig {
   };
 }
 
+function validateProviders(value: unknown): AIProvider[] {
+  if (!Array.isArray(value)) throw new Error('配置中的 providers 必须是按优先级排列的数组。');
+  const names = new Set<string>();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new Error('每个 AI 来源必须是配置对象。');
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    if (!/^[a-zA-Z0-9._-]{1,40}$/.test(name))
+      throw new Error('来源名称需要 1–40 个英文字母、数字、点、下划线或连字符。');
+    if (names.has(name)) throw new Error('AI 来源名称不能重复。');
+    names.add(name);
+    const timeoutMs = entry.timeoutMs ?? 30_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
+      throw new Error('来源超时 timeoutMs 必须是 1–120000 的整数（毫秒）。');
+    return { name, ...validateConfig(entry), timeoutMs };
+  });
+}
+
 export async function loadConfig(
   path = configPath(),
   env: NodeJS.ProcessEnv = process.env,
-): Promise<AIConfig | null> {
+): Promise<AIProvider[] | null> {
   let saved: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
@@ -124,17 +146,38 @@ export async function loadConfig(
       );
   }
   if (!Object.keys(saved).length && !env.CMSG_BASE_URL && !env.CMSG_MODEL) return null;
-  return validateConfig({
-    ...saved,
-    ...(env.CMSG_PROTOCOL ? { protocol: env.CMSG_PROTOCOL } : {}),
-    ...(env.CMSG_BASE_URL ? { endpoint: env.CMSG_BASE_URL } : {}),
-    ...(env.CMSG_MODEL ? { model: env.CMSG_MODEL } : {}),
-    ...(env.CMSG_API_KEY !== undefined ? { apiKey: env.CMSG_API_KEY } : {}),
-  });
+  const entries = Object.hasOwn(saved, 'providers')
+    ? saved.providers
+    : [{ ...saved, name: 'default' }];
+  if (!Array.isArray(entries)) throw new Error('配置中的 providers 必须是数组。');
+  if (!entries.length && !env.CMSG_BASE_URL && !env.CMSG_MODEL) return null;
+  const overridden =
+    env.CMSG_PROTOCOL || env.CMSG_BASE_URL || env.CMSG_MODEL || env.CMSG_API_KEY !== undefined;
+  // Explicit environment overrides select one temporary provider, never a hidden paid fallback.
+  const providers = validateProviders(
+    overridden
+      ? [
+          {
+            ...(entries[0] ?? { name: 'default' }),
+            ...(env.CMSG_PROTOCOL ? { protocol: env.CMSG_PROTOCOL } : {}),
+            ...(env.CMSG_BASE_URL ? { endpoint: env.CMSG_BASE_URL } : {}),
+            ...(env.CMSG_MODEL ? { model: env.CMSG_MODEL } : {}),
+            ...(env.CMSG_API_KEY !== undefined ? { apiKey: env.CMSG_API_KEY } : {}),
+          },
+        ]
+      : entries,
+  );
+  return providers.length ? providers : null;
 }
 
-export async function saveConfig(config: AIConfig, path = configPath()): Promise<void> {
-  await saveJson(validateConfig(config), path);
+export async function saveConfig(
+  config: AIConfig | AIProvider[],
+  path = configPath(),
+): Promise<void> {
+  const providers = validateProviders(
+    Array.isArray(config) ? config : [{ ...config, name: 'default' }],
+  );
+  await saveJson({ providers }, path);
 }
 
 async function saveJson(value: unknown, path: string): Promise<void> {
