@@ -7,6 +7,7 @@ const WINDOWS_INTERNET_SETTINGS =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
 export type ProxySource = 'environment' | 'windows-system' | 'direct';
+export type ProxyMode = 'auto' | 'direct' | 'system';
 
 export interface WindowsProxySettings {
   enabled?: boolean;
@@ -35,6 +36,12 @@ function preferredEnv(env: NodeJS.ProcessEnv, name: string): string | undefined 
 
 function hasProxyEnvironment(env: NodeJS.ProcessEnv): boolean {
   return ['HTTP_PROXY', 'HTTPS_PROXY'].some((name) => preferredEnv(env, name) !== undefined);
+}
+
+function proxyMode(env: NodeJS.ProcessEnv): ProxyMode {
+  const value = preferredEnv(env, 'CMSG_PROXY_MODE')?.trim().toLowerCase() || 'auto';
+  if (value === 'auto' || value === 'direct' || value === 'system') return value;
+  throw new Error('CMSG_PROXY_MODE 只支持 auto、direct 或 system。');
 }
 
 function normalizeProxyUri(value: string): string {
@@ -143,6 +150,7 @@ export function readWindowsSystemProxy(): WindowsProxySettings | undefined {
 export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}): ProxyResolution {
   const env = options.env ?? process.env;
   const noProxy = preferredEnv(env, 'NO_PROXY')?.trim() ?? '';
+  const mode = proxyMode(env);
   const direct = (description: string): ProxyResolution => ({
     source: 'direct',
     httpProxy: '',
@@ -151,7 +159,8 @@ export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}
     description,
   });
   if (noProxy === '*') return direct('直连（NO_PROXY=*）');
-  if (hasProxyEnvironment(env)) {
+  if (mode === 'direct') return direct('直连（CMSG_PROXY_MODE=direct）');
+  if (mode === 'auto' && hasProxyEnvironment(env)) {
     const httpValue = preferredEnv(env, 'HTTP_PROXY');
     const httpsValue = preferredEnv(env, 'HTTPS_PROXY');
     const httpProxy = httpValue?.trim() ?? '';

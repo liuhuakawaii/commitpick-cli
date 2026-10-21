@@ -134,6 +134,14 @@ cmsg test
 
 支持上述变量的小写形式，小写优先；只设置 `HTTP_PROXY` 时也用于 HTTPS。Windows 静态代理支持统一地址、按 HTTP/HTTPS 分开的地址，以及通配符、端口和 `<local>` 绕过规则。仅配置 PAC 脚本时会提示并直连；需要代理时可显式指定 HTTP / mixed 地址。macOS / Linux 使用环境变量或系统级网络隧道，不自动读取桌面代理设置。无需 `NODE_USE_ENV_PROXY`，兼容 Node.js 22.13。代理配置不会保存到 AI 配置中，也不会因代理失败自动重试或改用直连。
 
+需要临时覆盖自动选择时，可设置 `CMSG_PROXY_MODE`：默认 `auto` 按环境变量、Windows 系统代理、直连的顺序选择；`direct` 强制直连；`system` 忽略显式代理变量并只使用 Windows 静态系统代理。它只影响当前进程，不会保存配置。程序不会同时发起代理和直连请求，也不会在一次请求失败后偷偷切换路径。
+
+```powershell
+$env:CMSG_PROXY_MODE = 'direct'
+cmsg test
+Remove-Item Env:CMSG_PROXY_MODE
+```
+
 连接失败会显示已知的底层错误码，例如 `ENOTFOUND`（DNS）、`ECONNREFUSED`（连接拒绝）、`ETIMEDOUT`（连接超时）和证书错误，并给出对应检查方向。不会输出 Key、代理凭据或原始错误正文。
 
 ## 日常使用
@@ -212,13 +220,14 @@ Windows 文本复制使用系统 `clip.exe`，以不带 BOM 的 UTF-16LE 传入�
 
 Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为 `0600`，Windows 继承用户目录权限。也可通过环境变量提供 Key。环境变量优先于保存的设置，`setup` 不会持久化临时环境变量。
 
-| 环境变量        | 作用                                           |
-| --------------- | ---------------------------------------------- |
-| `CMSG_PROTOCOL` | 覆盖协议：`responses` 或 `chat-completions`    |
-| `CMSG_BASE_URL` | 覆盖 AI 地址，接受与 setup 相同的格式          |
-| `CMSG_API_KEY`  | 覆盖 API Key，允许空值                         |
-| `CMSG_MODEL`    | 覆盖模型名                                     |
-| `CMSG_CONFIG`   | 指定配置文件完整路径，可用于多套配置和隔离测试 |
+| 环境变量          | 作用                                           |
+| ----------------- | ---------------------------------------------- |
+| `CMSG_PROTOCOL`   | 覆盖协议：`responses` 或 `chat-completions`    |
+| `CMSG_BASE_URL`   | 覆盖 AI 地址，接受与 setup 相同的格式          |
+| `CMSG_API_KEY`    | 覆盖 API Key，允许空值                         |
+| `CMSG_MODEL`      | 覆盖模型名                                     |
+| `CMSG_PROXY_MODE` | 代理模式：`auto`、`direct` 或 `system`         |
+| `CMSG_CONFIG`     | 指定配置文件完整路径，可用于多套配置和隔离测试 |
 
 同时提供 `CMSG_BASE_URL` 和 `CMSG_MODEL` 时，无需运行 setup。设置任一 AI 环境覆盖后，本次仅使用覆盖后的最高优先级来源，不回退；`CMSG_CONFIG` 本身只是文件路径，不关闭回退。通用偏好单独保存到 `<配置文件路径>.preferences.json`，AI 配置损坏不影响 `--local`。旧单来源配置以 `default` 名称兼容读取，不在读取时改写文件；下次保存升级为 `providers` 数组。旧文件的 `language` / `count` 不再决定默认输出。
 

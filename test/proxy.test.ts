@@ -15,6 +15,35 @@ test('explicit proxy environment variables take precedence over Windows system p
   assert.equal(result.httpProxy, '');
 });
 
+test('proxy mode can force direct access or Windows system proxy', () => {
+  const endpoint = 'https://api.example.test/v1/responses';
+  const env = {
+    CMSG_PROXY_MODE: 'direct',
+    HTTPS_PROXY: 'http://env.example:8080',
+    NO_PROXY: '',
+  };
+  const direct = resolveProxy(endpoint, {
+    env,
+    platform: 'win32',
+    readSystemProxy: () => ({ enabled: true, proxyServer: '127.0.0.1:7897' }),
+  });
+  assert.equal(direct.source, 'direct');
+  assert.match(direct.description, /CMSG_PROXY_MODE=direct/);
+
+  const system = resolveProxy(endpoint, {
+    env: { ...env, CMSG_PROXY_MODE: 'system' },
+    platform: 'win32',
+    readSystemProxy: () => ({ enabled: true, proxyServer: '127.0.0.1:7897' }),
+  });
+  assert.equal(system.source, 'windows-system');
+  assert.equal(system.httpsProxy, 'http://127.0.0.1:7897');
+
+  assert.throws(
+    () => resolveProxy(endpoint, { env: { CMSG_PROXY_MODE: 'race' } }),
+    /CMSG_PROXY_MODE/,
+  );
+});
+
 test('Windows static proxy selects the HTTP and HTTPS settings independently', () => {
   const result = resolveProxy('https://api.example.test/v1/responses', {
     platform: 'win32',
