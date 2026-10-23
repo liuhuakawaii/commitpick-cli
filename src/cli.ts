@@ -158,7 +158,7 @@ const program = new Command()
       console.error('本地规则模式：仅根据文件操作生成，不调用 AI。可运行 cmsg setup 配置 AI。');
     if (changes.summarized)
       console.error(
-        '已自动整理输入：保留全部文件变更，源码使用全文或片段，构建产物及锁文件仅保留统计。',
+        '已自动整理输入：保留全部文件变更，源码使用全文或片段，构建产物、锁文件、AGENTS.md、README.md 及测试文件仅保留元数据和统计。',
       );
     let usage: TokenUsage | undefined;
     let provider: ProviderIdentity | undefined;

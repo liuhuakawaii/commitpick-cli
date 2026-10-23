@@ -7,31 +7,30 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { loadConfig, loadPreferences, saveConfig, savePreferences } from '../src/config.js';
 
-test('free cloud setup fixes endpoint and model and persists an independently named source', async (t) => {
+test('setup directly configures an API and persists an independently named source', async (t) => {
   const { setupConfig } = await import('../src/setup.js');
-  const dir = await mkdtemp(join(tmpdir(), 'commitpick-free-'));
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-api-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'config.json');
   const selections: string[] = [];
   const config = await setupConfig(path, {
     input: async ({ message, default: value }) => {
-      assert.doesNotMatch(message, /AI 地址|模型名/);
+      if (message.startsWith('AI 地址')) return 'https://api.example/v1';
+      if (message.startsWith('模型名')) return 'example-model';
       return value!;
     },
-    password: async ({ message, mask, validate }) => {
-      assert.match(message, /openrouter.ai\/settings\/keys/);
+    password: async ({ message, mask }) => {
+      assert.match(message, /API Key/);
       assert.equal(mask, '*');
-      assert.notEqual(validate?.(''), true);
-      assert.notEqual(validate?.('-'), true);
-      assert.equal(validate?.('free-key'), true);
-      return ' free-key ';
+      return ' api-key ';
     },
     select: async ({ message, default: value, choices }) => {
       selections.push(message);
-      if (message.includes('来源')) {
-        assert.equal(value, 'openrouter-free');
-        assert.ok(choices.some((choice) => choice.value === 'custom'));
-        return 'openrouter-free';
+      assert.notEqual(message, 'AI 来源');
+      if (message.includes('协议')) {
+        assert.equal(value, 'responses');
+        assert.ok(choices.some((choice) => choice.value === 'chat-completions'));
+        return 'chat-completions';
       }
       if (message.includes('连接方式')) return 'auto';
       assert.match(message, /语言/);
@@ -44,16 +43,15 @@ test('free cloud setup fixes endpoint and model and persists an independently na
       name: 'provider-1',
       timeoutMs: 30000,
       protocol: 'chat-completions',
-      endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-      model: 'openrouter/free',
-      apiKey: 'free-key',
+      endpoint: 'https://api.example/v1/chat/completions',
+      model: 'example-model',
+      apiKey: 'api-key',
     },
   ]);
   assert.equal(config.length, 1);
   assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
   await setupConfig(path, {
     input: async ({ message, default: value }) => {
-      assert.doesNotMatch(message, /AI 地址|模型名/);
       return value!;
     },
     password: async ({ message }) => {
@@ -62,9 +60,9 @@ test('free cloud setup fixes endpoint and model and persists an independently na
     },
     select: async ({ default: value }) => value,
   });
-  assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'free-key');
+  assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'api-key');
 
-  // Exercise the persisted preset through the real request pipeline against a local fixture.
+  // Exercise the persisted configuration through the real request pipeline against a local fixture.
   const { generateMessages } = await import('../src/ai.js');
   const requests: Record<string, unknown>[] = [];
   let status = 200;
@@ -98,47 +96,8 @@ test('free cloud setup fixes endpoint and model and persists an independently na
   }
   assert.equal(requests.length, 3, 'each attempt sends one request, including failures');
   for (const body of requests) {
-    assert.equal(body.model, 'openrouter/free');
+    assert.equal(body.model, 'example-model');
     assert.deepEqual(Object.keys(body).sort(), ['messages', 'model', 'stream']);
-  }
-});
-
-test('switching to free cloud rejects missing keys without reusing a relay key or changing files', async (t) => {
-  const { setupConfig } = await import('../src/setup.js');
-  const dir = await mkdtemp(join(tmpdir(), 'commitpick-free-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const path = join(dir, 'config.json');
-  await saveConfig(
-    {
-      protocol: 'responses',
-      endpoint: 'https://relay.example/v1/responses',
-      model: 'paid-model',
-      apiKey: 'relay-key',
-    },
-    path,
-  );
-  await savePreferences({ language: 'zh', count: 5 }, path);
-  const original = await readFile(path, 'utf8');
-  for (const key of ['', ' ', '-']) {
-    await assert.rejects(
-      setupConfig(path, {
-        input: async ({ default: value }) => value!,
-        password: async ({ message }) => {
-          assert.doesNotMatch(message, /保留/);
-          return key;
-        },
-        select: async ({ message, default: value }) => {
-          if (message === 'AI 来源') {
-            assert.equal(value, 'custom');
-            return 'openrouter-free';
-          }
-          return value;
-        },
-      }),
-      /OpenRouter.*Key/,
-    );
-    assert.equal(await readFile(path, 'utf8'), original);
-    assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 5 });
   }
 });
 
@@ -159,13 +118,7 @@ test('explicit reset backs up malformed configuration before replacing it', asyn
             : value!,
       password: async () => '',
       select: async ({ message }) =>
-        message.includes('来源')
-          ? 'custom'
-          : message.includes('协议')
-            ? 'responses'
-            : message.includes('连接方式')
-              ? 'auto'
-              : 'both',
+        message.includes('协议') ? 'responses' : message.includes('连接方式') ? 'auto' : 'both',
     },
     { reset: true },
   );
@@ -191,13 +144,7 @@ test('setup asks for address, masked key, model and language; preserves saved ke
       return 'test-key';
     },
     select: async ({ message }) =>
-      message.includes('来源')
-        ? 'custom'
-        : message.includes('协议')
-          ? 'chat-completions'
-          : message.includes('连接方式')
-            ? 'auto'
-            : 'zh',
+      message.includes('协议') ? 'chat-completions' : message.includes('连接方式') ? 'auto' : 'zh',
   });
   const saved = await loadConfig(path, {});
   assert.equal(saved?.[0]?.endpoint, 'https://relay.example/v1/chat/completions');
@@ -212,13 +159,11 @@ test('setup asks for address, masked key, model and language; preserves saved ke
     select: async ({ message }) =>
       message.startsWith('配置操作')
         ? 'edit'
-        : message.includes('来源')
-          ? 'custom'
-          : message.includes('协议')
-            ? 'chat-completions'
-            : message.includes('连接方式')
-              ? 'auto'
-              : 'en',
+        : message.includes('协议')
+          ? 'chat-completions'
+          : message.includes('连接方式')
+            ? 'auto'
+            : 'en',
   });
   assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'test-key');
   assert.equal((await loadPreferences(path)).count, 5);
@@ -251,13 +196,11 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
     select: async ({ message }) =>
       message.startsWith('配置操作')
         ? 'edit'
-        : message.includes('来源')
-          ? 'custom'
-          : message.includes('协议')
-            ? 'responses'
-            : message.includes('连接方式')
-              ? 'auto'
-              : 'zh',
+        : message.includes('协议')
+          ? 'responses'
+          : message.includes('连接方式')
+            ? 'auto'
+            : 'zh',
   });
   assert.deepEqual(await loadConfig(path, {}), [
     {

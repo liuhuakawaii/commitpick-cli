@@ -71,12 +71,12 @@ class FileChange {
   private samples: { index: number; text: string }[] = [];
   private last = '';
 
-  constructor(readonly generated: boolean) {}
+  constructor(readonly omissionReason: string | undefined) {}
 
   detail(line: string, clipped: boolean) {
     if (line.startsWith('+')) this.added++;
     if (line.startsWith('-')) this.removed++;
-    if (this.generated) return;
+    if (this.omissionReason) return;
     this.fullBytes += Buffer.byteLength(line) + 1;
     this.full =
       this.full !== null && !clipped && this.fullBytes <= FILE_DETAIL_BYTES
@@ -150,9 +150,18 @@ class ChangeContext {
       /(?:^|\/)(?:dist|build|coverage|\.next)\/|public\/[^ ]*assets\/|(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|[^ /]+\.min\.js|[^ /]+\.map)(?:[ "\\]|$)/.test(
         header,
       );
-    const file = new FileChange(generated);
-    // Generated content is never useful for a short subject, even in a small diff.
-    if (generated) this.full = null;
+    const documentOrTest =
+      /(?:\/|")(?:AGENTS|README)\.md(?:"? "?b\/|"?$)|(?:\/|")(?:tests?|__tests__)\/|\.(?:test|spec)\.[^/]+(?:"? "?b\/|"?$)/i.test(
+        header,
+      );
+    const omissionReason = generated
+      ? 'Generated/lockfile path: content omitted.'
+      : documentOrTest
+        ? 'Document/test path: content omitted.'
+        : undefined;
+    const file = new FileChange(omissionReason);
+    // These paths retain metadata and counts even when the entire diff is small.
+    if (omissionReason) this.full = null;
     file.metadata.push(header);
     this.files.push(file);
     this.append(header);
@@ -165,14 +174,14 @@ class ChangeContext {
       .map(
         (file, i) =>
           `[File ${i + 1}]\n${file.metadata.join('\n')}\nChanged lines: +${file.added} -${file.removed}` +
-          (file.generated ? '\nGenerated/lockfile path: content omitted.' : ''),
+          (file.omissionReason ? '\n' + file.omissionReason : ''),
       )
       .join('\n\n');
     const details: string[] = [];
     let budget = DETAIL_BYTES;
     const candidates = this.files
       .map((file, i) => ({ file, i }))
-      .filter(({ file }) => !file.generated)
+      .filter(({ file }) => !file.omissionReason)
       .sort((a, b) => (a.file.full?.length ?? Infinity) - (b.file.full?.length ?? Infinity));
     for (const [position, { file, i }] of candidates.entries()) {
       const text = file.render(Math.floor(budget / (candidates.length - position)));
@@ -183,7 +192,7 @@ class ChangeContext {
     }
     return {
       diff:
-        'Large change set: all file operations are listed below. Patch detail may be excerpted or omitted; do not infer unseen behavior.\n\n' +
+        'Summarized change set: all file operations are listed below. Patch detail may be excerpted or omitted; do not infer unseen behavior.\n\n' +
         overview +
         '\n\n' +
         details.join('\n'),
@@ -258,7 +267,7 @@ async function untrackedDiff(root: string, path: string, context: ChangeContext)
   const file = context.start(`Untracked new file: ${JSON.stringify(path)}`);
   const metadata = (text: string) => {
     file.metadata.push(text);
-    if (!file.generated) context.append(text);
+    if (!file.omissionReason) context.append(text);
   };
   if (stat.isSymbolicLink()) {
     metadata(`Symbolic link target: ${await readlink(absolute)}`);
@@ -278,7 +287,7 @@ async function untrackedDiff(root: string, path: string, context: ChangeContext)
     const stream = handle.createReadStream({ start: 0, autoClose: false });
     try {
       for await (const { line, clipped } of lines(stream, true)) {
-        if (!file.generated) context.append('+' + line, clipped);
+        if (!file.omissionReason) context.append('+' + line, clipped);
         file.detail('+' + line, clipped);
       }
     } catch (error) {

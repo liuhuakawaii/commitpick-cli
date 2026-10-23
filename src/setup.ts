@@ -30,9 +30,6 @@ interface Prompts {
   }) => Promise<string>;
 }
 
-const freeEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
-const freeModel = 'openrouter/free';
-
 export async function setupConfig(
   path = configPath(),
   prompts?: Prompts,
@@ -91,21 +88,6 @@ export async function setupConfig(
   }
   const previous = providers[index];
   const preferences = await loadPreferences(path);
-  const source = await ui.select({
-    message: 'AI 来源',
-    default:
-      !previous || (previous.endpoint === freeEndpoint && previous.model === freeModel)
-        ? 'openrouter-free'
-        : 'custom',
-    choices: [
-      {
-        name: 'OpenRouter 免费云端（需免费 API Key，有额度限制，无需本地部署）',
-        value: 'openrouter-free',
-      },
-      { name: '自定义 API（中转站、官方接口或本地服务）', value: 'custom' },
-    ],
-  });
-  const free = source === 'openrouter-free';
   const validateName = (value: string) => {
     const name = value.trim();
     if (!/^[a-zA-Z0-9._-]{1,40}$/.test(name))
@@ -121,16 +103,14 @@ export async function setupConfig(
   ).trim();
   const nameValidation = validateName(name);
   if (nameValidation !== true) throw new Error(nameValidation);
-  const protocol: Protocol = free
-    ? 'chat-completions'
-    : ((await ui.select({
-        message: 'AI 接口协议（按服务商文档选择）',
-        default: previous?.protocol ?? 'responses',
-        choices: [
-          { name: 'Responses（Codex / Responses 兼容中转站）', value: 'responses' },
-          { name: 'Chat Completions（聊天补全兼容接口）', value: 'chat-completions' },
-        ],
-      })) as Protocol);
+  const protocol: Protocol = (await ui.select({
+    message: 'AI 接口协议（按服务商文档选择）',
+    default: previous?.protocol ?? 'responses',
+    choices: [
+      { name: 'Responses（Codex / Responses 兼容中转站）', value: 'responses' },
+      { name: 'Chat Completions（聊天补全兼容接口）', value: 'chat-completions' },
+    ],
+  })) as Protocol;
   const proxyMode = (await ui.select({
     message: '网络连接方式（失败时按当前配置回退）',
     default: previous?.proxyMode ?? 'auto',
@@ -140,51 +120,36 @@ export async function setupConfig(
       { name: '强制直连：不使用任何代理', value: 'direct' },
     ],
   })) as ProviderProxyMode;
-  const address = free
-    ? freeEndpoint
-    : await ui.input({
-        message: 'AI 地址（域名、Base URL 或完整接口地址）',
-        default: previous
-          ? normalizeEndpoint(previous.endpoint, protocol)
-          : 'https://api.openai.com/v1',
-        validate: (value) => {
-          try {
-            normalizeEndpoint(value, protocol);
-            return true;
-          } catch (error) {
-            return (error as Error).message;
-          }
-        },
-      });
+  const address = await ui.input({
+    message: 'AI 地址（域名、Base URL 或完整接口地址）',
+    default: previous
+      ? normalizeEndpoint(previous.endpoint, protocol)
+      : 'https://api.openai.com/v1',
+    validate: (value) => {
+      try {
+        normalizeEndpoint(value, protocol);
+        return true;
+      } catch (error) {
+        return (error as Error).message;
+      }
+    },
+  });
   const endpoint = normalizeEndpoint(address, protocol);
-  // A relay credential must never become the default credential for the free cloud service.
+  // Only retain credentials when editing within the same origin.
   const savedKey =
     previous && new URL(previous.endpoint).origin === new URL(endpoint).origin
       ? previous.apiKey
       : '';
   const keyValue = (value: string) => (value.trim() === '-' ? '' : value.trim() || savedKey);
-  const validateKey = (value: string) =>
-    !free ||
-    !!keyValue(value) ||
-    'OpenRouter 免费云端需要 API Key，请在 https://openrouter.ai/settings/keys 创建。';
   const key = await ui.password({
-    message: free
-      ? `OpenRouter API Key（https://openrouter.ai/settings/keys${savedKey ? '；回车保留' : '；必填'}）`
-      : savedKey
-        ? 'API Key（回车保留，输入 - 清空）'
-        : 'API Key（本地无认证服务可留空）',
+    message: savedKey ? 'API Key（回车保留，输入 - 清空）' : 'API Key（本地无认证服务可留空）',
     mask: '*',
-    validate: validateKey,
   });
-  const keyValidation = validateKey(key);
-  if (keyValidation !== true) throw new Error(keyValidation);
-  const model = free
-    ? freeModel
-    : await ui.input({
-        message: '模型名（填写服务商提供的准确名称）',
-        default: previous?.model,
-        validate: (value) => value.trim().length > 0 || '模型名不能为空。',
-      });
+  const model = await ui.input({
+    message: '模型名（填写服务商提供的准确名称）',
+    default: previous?.model,
+    validate: (value) => value.trim().length > 0 || '模型名不能为空。',
+  });
   const timeout = await ui.input({
     message: '请求超时（秒，失败后尝试下一来源）',
     default: String((previous?.timeoutMs ?? 30_000) / 1000),

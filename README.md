@@ -55,33 +55,23 @@ cmsg --local --json     # 供脚本使用，source 为 local
 cmsg setup
 ```
 
-首次配置先选择 **AI 来源**，默认选中 **OpenRouter 免费云端**。已有配置时，向导提供「编辑已有来源」「添加来源」「调整优先级」「移除来源」；新增来源放在列表末尾。每个来源有独立名称、协议、地址、Key、模型和超时，语言与候选数量仍为通用偏好。
+首次配置直接填写 API 来源信息。已有配置时，向导提供「编辑已有来源」「添加来源」「调整优先级」「移除来源」；新增来源放在列表末尾。每个来源有独立名称、协议、地址、Key、模型和超时，语言与候选数量仍为通用偏好。
 
-例如先添加名为 `free` 的 OpenRouter 免费来源，再运行 `cmsg setup` 选择「添加来源」，配置名为 `paid` 的自定义 API；通过「调整优先级」依次选择 `free`、`paid`，即可先免费、失败后付费。`cmsg config` 显示实际生效的顺序，所有 Key 都会隐藏。
+例如先配置名为 `primary` 的 API，再运行 `cmsg setup` 选择「添加来源」，配置名为 `backup` 的备用 API；通过「调整优先级」设置尝试顺序。`cmsg config` 显示实际生效的顺序，所有 Key 都会隐藏。
 
-每次生成按优先级顺序尝试，每个来源最多一次；超时、网络或 HTTP 错误、未完成响应及候选格式校验失败时尝试下一项，成功即停止。回退复用同一份 diff、hint 和语言数量，不重新读取 Git。全部来源失败则报错，不自动降级为本地规则；菜单手动重新生成会从最高优先级重新尝试，全部失败时保留已有候选。**配置了付费来源，就可能在回退时产生费用**；只保留免费来源可避免调用付费 API。
-
-### 免费云端（无需本地部署）
-
-1. 注册 OpenRouter，在 [API Keys 页面](https://openrouter.ai/settings/keys) 创建 Key。
-2. 运行 `cmsg setup`，选择 **OpenRouter 免费云端**，填写来源名称、Key、超时和默认语言。
-3. 运行 `cmsg test` 验证连接、候选格式和耗时，再在项目中运行 `cmsg`。
-
-此入口固定使用 `https://openrouter.ai/api/v1/chat/completions` 和 `openrouter/free`，不需要填写接口地址或模型名。按 [OpenRouter 官方说明](https://openrouter.ai/docs/guides/routing/routers/free-router)，路由本身和选中的免费模型均不收费，只在免费模型池中选择；具体模型会变化，不保证使用 DeepSeek 或 GPT。CLI 不向该路由传入付费候选模型，但会回退到你在列表中另外配置的来源，并在 stderr 显示每次尝试和失败原因。
-
-免费服务有额度、限流和可用性限制，高峰时可能较慢；无需部署模型，但需要网络和 OpenRouter API Key。限额以 [服务商当前规则](https://openrouter.ai/docs/api/reference/limits) 和账号状态为准。配置不会测试网络；`cmsg test`、实际生成和手动重新生成都会消耗请求额度。
+每次生成按优先级顺序尝试，每个来源最多一次；超时、网络或 HTTP 错误、未完成响应及候选格式校验失败时尝试下一项，成功即停止。回退复用同一份 diff、hint 和语言数量，不重新读取 Git。全部来源失败则报错，不自动降级为本地规则；菜单手动重新生成会从最高优先级重新尝试，全部失败时保留已有候选。**配置了付费来源，就可能在回退时产生费用**。
 
 新增来源不继承其他来源的 Key；编辑时，只有地址仍属于同一 origin（协议、域名、端口相同）才可回车保留 Key。临时环境变量只覆盖最高优先级来源，并将它作为本次唯一来源；若设置过 `CMSG_BASE_URL`、`CMSG_MODEL`、`CMSG_PROTOCOL` 或 `CMSG_API_KEY`，请移除对应覆盖以恢复完整列表，并用 `cmsg config` 确认。
 
 ### 自定义 API
 
-选择 **自定义 API** 后，填写来源名称及以下设置：
+填写来源名称及以下设置：
 
 1. **AI 接口协议**：Responses 或 Chat Completions。新配置默认选中 Responses；已有配置保留原协议。
 2. **AI 地址**：可填域名、Base URL 或完整接口地址。
 3. **API Key**：输入时隐藏；本地无认证服务可留空。
 4. **模型名**：填写服务商提供的准确名称。
-5. **请求超时**：每个来源独立设置，默认 30 秒，最多 120 秒；免费来源较慢时可设置更短超时以更快回退。
+5. **请求超时**：每个来源独立设置，默认 30 秒，最多 120 秒；可设置更短超时以更快回退。
 6. **默认语言**：English、简体中文或双语（默认 2+2），对所有来源生效。
 
 地址会按所选协议自动处理：
@@ -180,7 +170,7 @@ cmsg --help
 
 未跟踪文件遵循 `.gitignore`。首次提交前的空仓库也可以使用。二进制文件只提供变更元数据，不上传二进制内容；非 UTF-8 新文件只提供元数据。冲突未解决时拒绝生成。
 
-小改动提供完整 diff，超过 24,000 bytes 或含构建产物时自动整理，源码细节预算为 20,000 bytes，保留分布在文件不同位置的片段。全部文件操作与增删行统计仍保留；这部分元数据另计，因此总输入并非严格限制为 24 KB。常见构建产物（如 `dist/`、`build/`、`public/**/assets/`、压缩 JS、source map）和锁文件始终仅提供元数据。大改动可以运行，但多个独立目的是否应合并为一次提交仍由用户判断。
+小改动提供完整 diff；超过 24,000 bytes 或含需省略正文的文件时自动整理，源码细节预算为 20,000 bytes，保留分布在文件不同位置的片段。全部文件操作与增删行统计仍保留；这部分元数据另计，因此总输入并非严格限制为 24 KB。常见构建产物（如 `dist/`、`build/`、`public/**/assets/`、压缩 JS、source map）和锁文件始终仅提供元数据。`AGENTS.md`、`README.md`（任意目录，大小写不敏感），以及 `test/`、`tests/`、`__tests__/` 目录和 `*.test.*`、`*.spec.*` 测试文件也始终省略正文，保留文件操作和增删行数。纯文档或纯测试提交仍可生成候选，但模型只能根据文件清单与统计描述改动。大改动可以运行，但多个独立目的是否应合并为一次提交仍由用户判断。
 
 整理模式会在 stderr 提示，并在模型输入中标明省略内容；全部文件操作仍然保留，模型仅根据可见内容生成候选。大改动不会额外拆分模型请求，回退时复用同一份整理结果。片段无法覆盖每一行细节，涉及重要意图时可以用 `--hint` 补充。
 
@@ -239,19 +229,19 @@ Key 保存在用户配置文件中，不进入 Git 仓库；Unix 文件权限为
 {
   "providers": [
     {
-      "name": "free",
+      "name": "primary",
       "protocol": "chat-completions",
-      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-      "apiKey": "YOUR_OPENROUTER_KEY",
-      "model": "openrouter/free",
+      "endpoint": "https://primary.example/v1/chat/completions",
+      "apiKey": "YOUR_PRIMARY_KEY",
+      "model": "YOUR_PRIMARY_MODEL",
       "timeoutMs": 10000,
       "proxyMode": "auto"
     },
     {
-      "name": "paid",
+      "name": "backup",
       "protocol": "responses",
       "endpoint": "https://relay.example/v1/responses",
-      "apiKey": "YOUR_PAID_KEY",
+      "apiKey": "YOUR_BACKUP_KEY",
       "model": "YOUR_MODEL",
       "timeoutMs": 30000,
       "proxyMode": "direct"

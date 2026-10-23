@@ -251,3 +251,62 @@ test('invalid UTF-8 late in a large new file discards partial decoded content', 
   assert.match(result.diff, /Non-UTF-8/);
   assert.doesNotMatch(result.diff, /DO_NOT_SEND_PARTIAL_LEGACY_CONTENT/);
 });
+
+test('document and test patches keep metadata only across untracked, staged and worktree scopes', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  const omitted = [
+    'AGENTS.md',
+    'Readme.md',
+    'nested/README.md',
+    'test/helper.ts',
+    'tests/case.ts',
+    'src/__tests__/case.ts',
+    'src/case.test.ts',
+    'src/case.spec.ts',
+  ];
+  const included = ['src/main.ts', 'docs/guide.md', 'src/test-utils.ts', 'src/README.md.ts'];
+  for (const path of [...omitted, ...included]) {
+    await mkdir(join(cwd, path, '..'), { recursive: true });
+    await writeFile(
+      join(cwd, path),
+      (omitted.includes(path) ? 'OMITTED_BODY' : 'VISIBLE_BODY') + '\n',
+    );
+  }
+  for (const scope of ['worktree', 'staged'] as const) {
+    if (scope === 'staged') git('add', '.');
+    const before = git('status', '--porcelain=v1');
+    const result = await collect(cwd, scope);
+    assert.equal(result.summarized, true);
+    assert.doesNotMatch(result.diff, /OMITTED_BODY/);
+    assert.match(result.diff, /VISIBLE_BODY/);
+    assert.match(result.diff, /Document\/test path: content omitted/);
+    for (const path of [...omitted, ...included]) {
+      assert.ok(result.files.some((file) => file.path === path));
+      assert.ok(result.diff.includes(path));
+    }
+    assert.equal(
+      (result.diff.match(/Changed lines: \+1 -0/g) ?? []).length,
+      omitted.length + included.length,
+    );
+    assert.equal(git('status', '--porcelain=v1'), before);
+  }
+  git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixtures');
+  await writeFile(join(cwd, 'AGENTS.md'), 'STAGED_OMITTED\n');
+  git('add', 'AGENTS.md');
+  await writeFile(join(cwd, 'AGENTS.md'), 'WORKTREE_OMITTED\nextra\n');
+  const staged = await collect(cwd);
+  assert.deepEqual(staged.files, [{ status: 'M', path: 'AGENTS.md' }]);
+  assert.match(staged.diff, /Changed lines: \+1 -1/);
+  assert.doesNotMatch(staged.diff, /STAGED_OMITTED|WORKTREE_OMITTED/);
+  const worktree = await collect(cwd, 'worktree');
+  assert.match(worktree.diff, /Changed lines: \+2 -1/);
+  assert.doesNotMatch(worktree.diff, /STAGED_OMITTED|WORKTREE_OMITTED|extra/);
+  await writeFile(join(cwd, 'AGENTS.md'), 'OMITTED_BODY\n');
+  git('add', 'AGENTS.md');
+  await rm(join(cwd, 'src/case.test.ts'));
+  const testsOnly = await collect(cwd);
+  assert.deepEqual(testsOnly.files, [{ status: 'D', path: 'src/case.test.ts' }]);
+  assert.match(testsOnly.diff, /Changed lines: \+0 -1/);
+  assert.doesNotMatch(testsOnly.diff, /OMITTED_BODY/);
+});

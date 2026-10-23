@@ -23,19 +23,19 @@ test('ordered providers roundtrip, legacy reads are non-mutating, and env overri
   assert.equal(await readFile(path, 'utf8'), legacy);
   const providers = [
     {
-      name: 'free',
+      name: 'primary',
       protocol: 'chat-completions' as const,
-      endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-      model: 'openrouter/free',
-      apiKey: 'free-key',
+      endpoint: 'https://primary.example/v1/chat/completions',
+      model: 'primary-model',
+      apiKey: 'primary-key',
       timeoutMs: 5000,
     },
     {
-      name: 'paid',
+      name: 'backup',
       protocol: 'responses' as const,
-      endpoint: 'https://paid.example/v1/responses',
-      model: 'paid-model',
-      apiKey: 'paid-key',
+      endpoint: 'https://backup.example/v1/responses',
+      model: 'backup-model',
+      apiKey: 'backup-key',
       timeoutMs: 30000,
     },
   ];
@@ -43,7 +43,7 @@ test('ordered providers roundtrip, legacy reads are non-mutating, and env overri
   assert.deepEqual(await loadConfig(path, {}), providers);
   assert.deepEqual(
     (await loadConfig(path, { CMSG_API_KEY: 'temporary-key' }))?.map((p) => [p.name, p.apiKey]),
-    [['free', 'temporary-key']],
+    [['primary', 'temporary-key']],
   );
   assert.deepEqual(await loadConfig(path, {}), providers);
   assert.doesNotMatch(await readFile(path, 'utf8'), /temporary-key/);
@@ -77,7 +77,7 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
       input: body.input ?? body.messages?.[1]?.content,
       key: req.headers.authorization,
     });
-    if (body.model === 'free') {
+    if (body.model === 'primary') {
       if (firstStatus === 0) return;
       if (firstStatus === -1) {
         req.socket.destroy();
@@ -97,14 +97,14 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
                 {
                   type: 'output_text',
                   text:
-                    invalidSecond && body.model === 'paid'
+                    invalidSecond && body.model === 'backup'
                       ? 'bad-json'
                       : JSON.stringify({ messages }),
                 },
               ],
             },
           ],
-          ...(body.model === 'paid' ? { usage: { input_tokens: 12, output_tokens: 8 } } : {}),
+          ...(body.model === 'backup' ? { usage: { input_tokens: 12, output_tokens: 8 } } : {}),
         }),
       );
     }
@@ -117,19 +117,19 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const providers = [
     {
-      name: 'free',
+      name: 'primary',
       protocol: 'chat-completions' as const,
       endpoint,
-      model: 'free',
-      apiKey: 'free-secret',
+      model: 'primary',
+      apiKey: 'primary-secret',
       timeoutMs: 500,
     },
     {
-      name: 'paid',
+      name: 'backup',
       protocol: 'responses' as const,
       endpoint,
-      model: 'paid',
-      apiKey: 'paid-secret',
+      model: 'backup',
+      apiKey: 'backup-secret',
       timeoutMs: 1000,
     },
     {
@@ -153,7 +153,7 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   );
   assert.deepEqual(
     calls.map((c) => c.model),
-    ['free', 'paid'],
+    ['primary', 'backup'],
   );
   assert.deepEqual(JSON.parse(calls[0]!.input as string), { hint: 'reuse', diff: 'snapshot' });
   firstStatus = -1;
@@ -161,13 +161,13 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   await ai.generateWithFallback(providers, { language: 'en', count: 1 }, 'snapshot');
   assert.deepEqual(
     calls.map((c) => c.model),
-    ['free', 'paid'],
+    ['primary', 'backup'],
   );
-  assert.equal(calls[0]?.key, 'Bearer free-secret');
-  assert.equal(calls[1]?.key, 'Bearer paid-secret');
+  assert.equal(calls[0]?.key, 'Bearer primary-secret');
+  assert.equal(calls[1]?.key, 'Bearer backup-secret');
   assert.equal(calls[0]?.input, (calls[1]?.input as { content: string }[])[0]?.content);
   assert.deepEqual(result.messages, messages);
-  assert.equal(result.provider.name, 'paid');
+  assert.equal(result.provider.name, 'backup');
   assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 8 });
   assert.doesNotMatch(JSON.stringify(result), /secret/);
   assert.match(failures[0]!, /429/);
@@ -176,7 +176,7 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   await ai.generateWithFallback(providers, { language: 'en', count: 1 }, 'snapshot');
   assert.deepEqual(
     calls.map((c) => c.model),
-    ['free', 'paid'],
+    ['primary', 'backup'],
   );
   firstStatus = 401;
   invalidSecond = true;
@@ -185,8 +185,8 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
     ai.generateWithFallback(providers.slice(0, 2), { language: 'en', count: 1 }, 'snapshot'),
     (error: Error) => {
       assert.match(error.message, /全部|所有/);
-      assert.match(error.message, /free/);
-      assert.match(error.message, /paid/);
+      assert.match(error.message, /primary/);
+      assert.match(error.message, /backup/);
       assert.doesNotMatch(error.message, /secret|private-provider-error/);
       assert.ok(error.cause instanceof AggregateError);
       assert.equal(error.cause.errors.length, 2);
@@ -195,7 +195,7 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   );
   assert.deepEqual(
     calls.map((c) => c.model),
-    ['free', 'paid'],
+    ['primary', 'backup'],
   );
   calls.length = 0;
   const recovered = await ai.generateWithFallback(
@@ -207,10 +207,10 @@ test('fallback follows priority across failures, reuses the snapshot, stops on s
   assert.equal(
     recovered.usage,
     undefined,
-    'usage from an invalid paid response must not leak into the winner',
+    'usage from an invalid backup response must not leak into the winner',
   );
   assert.deepEqual(
     calls.map((c) => c.model),
-    ['free', 'paid', 'unused'],
+    ['primary', 'backup', 'unused'],
   );
 });
