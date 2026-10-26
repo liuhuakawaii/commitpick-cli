@@ -7,6 +7,51 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { loadConfig, loadPreferences, saveConfig, savePreferences } from '../src/config.js';
 
+test('preference setup configures independent language counts without touching providers', async (t) => {
+  const { setupConfig } = await import('../src/setup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'commitpick-language-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  await saveConfig(
+    { protocol: 'responses', endpoint: 'https://example.com/v1', apiKey: 'saved', model: 'm' },
+    path,
+  );
+  const original = await readFile(path, 'utf8');
+  await setupConfig(path, {
+    select: async () => 'preferences',
+    password: async () => {
+      throw new Error('must not ask for API key');
+    },
+    input: async ({ message, default: value, validate }) => {
+      if (message.startsWith('默认英文')) {
+        assert.equal(value, '1');
+        assert.notEqual(validate?.('-1'), true);
+        assert.equal(validate?.('0'), true);
+        return '0';
+      }
+      assert.notEqual(validate?.('0'), true, 'cannot disable both languages');
+      assert.notEqual(validate?.('1.5'), true);
+      assert.equal(validate?.('2'), true);
+      return '2';
+    },
+  });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 0, chineseCount: 2 });
+  assert.equal(await readFile(path, 'utf8'), original);
+  const saved = await readFile(`${path}.preferences.json`, 'utf8');
+  await assert.rejects(
+    setupConfig(path, {
+      select: async () => 'preferences',
+      password: async () => '',
+      input: async ({ message }) => {
+        if (message.startsWith('默认英文')) return '3';
+        throw new Error('cancelled');
+      },
+    }),
+    /cancelled/,
+  );
+  assert.equal(await readFile(`${path}.preferences.json`, 'utf8'), saved);
+});
+
 test('setup directly configures an API and persists an independently named source', async (t) => {
   const { setupConfig } = await import('../src/setup.js');
   const dir = await mkdtemp(join(tmpdir(), 'commitpick-api-'));
@@ -51,7 +96,7 @@ test('setup directly configures an API and persists an independently named sourc
     },
   ]);
   assert.equal(config.length, 1);
-  assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 1, chineseCount: 0 });
   await setupConfig(path, {
     input: async ({ message, default: value }) => {
       return value!;
@@ -68,12 +113,7 @@ test('setup directly configures an API and persists an independently named sourc
   const { generateMessages } = await import('../src/ai.js');
   const requests: Record<string, unknown>[] = [];
   let status = 200;
-  const candidates = [
-    'docs: add guide',
-    'docs: introduce guide',
-    'docs: 添加指南',
-    'docs: 新增使用指南',
-  ];
+  const candidates = ['docs: add guide'];
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
@@ -156,7 +196,7 @@ test('setup asks for address, masked key, model and language; preserves saved ke
   assert.equal(saved?.[0]?.endpoint, 'https://relay.example/v1/chat/completions');
   assert.equal(saved?.[0]?.apiKey, 'test-key');
   assert.equal(saved?.[0]?.model, 'fast-model');
-  assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 1, chineseCount: 0 });
   assert.equal(passwordCalls, 1);
   await savePreferences({ language: 'zh', count: 5 }, path);
   await module.setupConfig(path, {
@@ -172,7 +212,7 @@ test('setup asks for address, masked key, model and language; preserves saved ke
             : 'en',
   });
   assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'test-key');
-  assert.equal((await loadPreferences(path)).count, 5);
+  assert.equal((await loadPreferences(path)).chineseCount, 5);
 });
 
 test('setup switches a saved Chat Completions endpoint to Responses without persisting environment overrides', async (t) => {
@@ -220,7 +260,7 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
       model: 'saved-model',
     },
   ]);
-  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 5 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 0, chineseCount: 5 });
 });
 test('editing only model preserves every other source field and skips preferences', async (t) => {
   const { setupConfig } = await import('../src/setup.js');

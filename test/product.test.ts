@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, execFile } from 'node:child_process';
@@ -33,16 +33,15 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   return { cwd, env, run };
 }
 
-test('default CLI returns two English then two Chinese candidates without changing Git', async (t) => {
+test('default CLI returns one English candidate without changing Git', async (t) => {
   const { cwd, run } = await fixture(t);
   await writeFile(join(cwd, 'app.ts'), 'export const flag = true;\n');
   const before = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' });
   const { stdout } = await run(['--json']);
   const result = JSON.parse(stdout);
-  assert.equal(result.messages.length, 4);
-  assert.deepEqual(result.languages, ['en', 'en', 'zh', 'zh']);
+  assert.equal(result.messages.length, 1);
+  assert.deepEqual(result.languages, ['en']);
   assert.ok(result.messages.slice(0, 2).every((m: string) => !/\p{Script=Han}/u.test(m)));
-  assert.ok(result.messages.slice(2).every((m: string) => /\p{Script=Han}/u.test(m)));
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' }), before);
 });
 
@@ -144,4 +143,45 @@ test('medium source input is budgeted while keeping first and last behavior', as
   assert.match(result.diff, /firstBehavior/);
   assert.match(result.diff, /lastBehavior/);
   assert.equal(result.summarized, true);
+});
+
+test('independent language counts persist, override one field and reset safely', async (t) => {
+  const { cwd, env, run } = await fixture(t);
+  await writeFile(join(cwd, 'app.ts'), 'change');
+  await run(['config', '--en-count', '1', '--zh-count', '2']);
+  const path = env.CMSG_CONFIG + '.preferences.json';
+  const saved = await readFile(path, 'utf8');
+  assert.deepEqual(JSON.parse(saved), { englishCount: 1, chineseCount: 2 });
+  const generate = async (args: string[] = []) =>
+    JSON.parse((await run([...args, '--local', '--json'])).stdout);
+  assert.deepEqual((await generate()).languages, ['en', 'zh', 'zh']);
+  assert.deepEqual((await generate(['--en-count', '0'])).languages, ['zh', 'zh']);
+  assert.deepEqual((await generate(['--zh-count', '0'])).languages, ['en']);
+  assert.equal(await readFile(path, 'utf8'), saved, 'per-run overrides must not persist');
+  for (const args of [
+    ['--en-count', '0', '--zh-count', '0'],
+    ['--en-count', '4', '--zh-count', '2'],
+    ['--en-count', '-1'],
+    ['--zh-count', '1.5'],
+    ['--lang', 'both', '--en-count', '1'],
+    ['zh', '--zh-count', '2'],
+    ['--count', '3', '--en-count', '1'],
+  ])
+    await assert.rejects(generate(args));
+  await assert.rejects(run(['config', '--en-count', '5']));
+  assert.equal(
+    await readFile(path, 'utf8'),
+    saved,
+    'invalid preferences must not overwrite saved counts',
+  );
+  await run(['config', '--zh-count', '3']);
+  assert.deepEqual((await generate()).languages, ['en', 'zh', 'zh', 'zh']);
+  await run(['config', '--reset-preferences']);
+  assert.deepEqual((await generate()).languages, ['en']);
+  const backups = (await readdir(join(cwd, '.git'))).filter((name) => name.endsWith('.bak'));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, '.git', backups[0]!), 'utf8')), {
+    englishCount: 1,
+    chineseCount: 3,
+  });
 });

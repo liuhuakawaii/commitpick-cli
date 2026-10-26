@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadPreferences,
   savePreferences,
+  resolvePreferences,
   type Language,
 } from './config.js';
 import { collectChanges } from './git.js';
@@ -47,9 +48,16 @@ function countArgument(value: string): number {
   return Number(value);
 }
 
+function languageCountArgument(value: string): number {
+  if (!/^[0-5]$/.test(value)) throw new InvalidArgumentError('请输入 0 到 5 的整数。');
+  return Number(value);
+}
+
 interface Options {
   lang?: Language;
   count?: number;
+  enCount?: number;
+  zhCount?: number;
   staged?: boolean;
   worktree?: boolean;
   json?: boolean;
@@ -65,7 +73,7 @@ interface Options {
 const program = new Command()
   .name('cmsg')
   .description(
-    '从 Git 改动生成 4 条提交信息（2 English + 2 中文），可编辑后复制；无 AI 配置时使用本地规则。',
+    '从 Git 改动生成提交信息，默认 1 条英文，可分别设置中英文数量；无 AI 配置时使用本地规则。',
   )
   .version(metadata.version)
   .argument('[language]', '本次语言：both、zh / cn 或 en')
@@ -73,8 +81,19 @@ const program = new Command()
     new Option('-l, --lang <language>', '本次提交信息语言').choices(['both', 'zh', 'cn', 'en']),
   )
   .addOption(
-    new Option('-n, --count <number>', '候选总数，默认 4；双语时英文优先分配奇数条').argParser(
-      countArgument,
+    new Option(
+      '-n, --count <number>',
+      '候选总数（1–5），沿用当前语言；双语时英文优先分配奇数条',
+    ).argParser(countArgument),
+  )
+  .addOption(
+    new Option('--en-count <number>', '本次英文数量（0–5）；仅覆盖英文数量，合计 1–5 条').argParser(
+      languageCountArgument,
+    ),
+  )
+  .addOption(
+    new Option('--zh-count <number>', '本次中文数量（0–5）；仅覆盖中文数量，合计 1–5 条').argParser(
+      languageCountArgument,
     ),
   )
   .addOption(new Option('-s, --staged', '只分析暂存区').conflicts('worktree'))
@@ -101,7 +120,7 @@ const program = new Command()
   .option('--files', '在 stderr 列出本次纳入的文件')
   .addHelpText(
     'after',
-    '\n示例：\n  cmsg              生成 2 条英文 + 2 条中文，选择、编辑并复制\n  cmsg zh           本次全部中文（cn 也可）\n  cmsg en           本次全部英文\n  cmsg --preview    查看待发送内容，不请求 AI\n  cmsg -s --json    只根据暂存区生成 JSON\n  cmsg config --lang both --count 4  保存通用偏好\n  cmsg setup        配置 AI\n  cmsg setup --reset  备份旧 AI 配置后重新配置\n  cmsg test         用固定示例测试 AI，不读取仓库\n\n本工具不会执行 git add、commit 或 push。',
+    '\n示例：\n  cmsg              默认生成 1 条英文，选择并复制\n  cmsg zh           本次全部中文（cn 也可）\n  cmsg en           本次全部英文\n  cmsg --preview    查看待发送内容，不请求 AI\n  cmsg -s --json    只根据暂存区生成 JSON\n  cmsg --en-count 1 --zh-count 2  本次 1 英文 + 2 中文\n  cmsg config --en-count 1 --zh-count 0  保存通用偏好\n  cmsg setup        配置 AI\n  cmsg setup --reset  备份旧 AI 配置后重新配置\n  cmsg test         用固定示例测试 AI，不读取仓库\n\n本工具不会执行 git add、commit 或 push。',
   )
   .action(async (language: string | undefined, options: Options) => {
     if (language === 'cn') language = 'zh';
@@ -114,16 +133,19 @@ const program = new Command()
       throw new Error('非交互环境复制时请指定 --pick，例如 cmsg --pick 1 -c。');
     const started = performance.now();
     const preferences = options.preview
-      ? { language: 'both' as const, count: 4 }
+      ? { englishCount: 1, chineseCount: 0 }
       : await loadPreferences();
     const config = options.local || options.preview ? null : await loadConfig();
-    const generation = {
-      language: (language ?? options.lang ?? preferences.language) as Language,
-      count: options.count ?? preferences.count,
-    };
+    const generation = resolvePreferences(preferences, {
+      language: (language ?? options.lang) as Language | undefined,
+      count: options.count,
+      englishCount: options.enCount,
+      chineseCount: options.zhCount,
+    });
+    const languages = candidateLanguages(generation);
     if (!config && options.hint)
       throw new Error('--hint 仅适用于 AI 模式；请运行 cmsg setup，或去掉 --hint 使用本地规则。');
-    if (options.pick && options.pick > generation.count)
+    if (options.pick && options.pick > languages.length)
       throw new Error('--pick 不能超过候选数量。');
     console.error('正在读取 Git 改动…');
     const changes = await collectChanges(
@@ -133,7 +155,7 @@ const program = new Command()
     );
     const label = changes.scope === 'staged' ? '暂存区' : '工作区预览（含未暂存及未跟踪文件）';
     console.error(
-      `范围：${label} · ${changes.files.length} 个文件 · ${generation.language === 'both' ? 'English + 中文' : generation.language === 'zh' ? '中文' : 'English'} · ${generation.count} 条候选`,
+      `范围：${label} · ${changes.files.length} 个文件 · ${generation.englishCount} English + ${generation.chineseCount} 中文 · ${languages.length} 条候选`,
     );
     const showFiles = () => {
       console.error(`仓库：${changes.root}`);
@@ -206,7 +228,7 @@ const program = new Command()
             scope: changes.scope,
             source: config ? 'ai' : 'local',
             messages,
-            languages: candidateLanguages(generation.language, generation.count),
+            languages,
             ...(usage ? { usage } : {}),
             ...(provider ? { provider } : {}),
           },
@@ -278,16 +300,23 @@ program
       all?: boolean;
       lang?: Language | 'cn';
       count?: number;
+      enCount?: number;
+      zhCount?: number;
     }>();
     const config = await loadConfig();
     if (!config) throw new Error('尚未配置 AI，请先在终端运行 cmsg setup。');
     const selected = options.provider ? config.filter((p) => p.name === options.provider) : config;
     if (!selected.length) throw new Error('所选来源不存在，请运行 cmsg config 查看生效来源。');
     const { AIError, generateWithFallback } = await import('./ai.js');
-    const preferences = {
-      language: options.lang === 'cn' ? ('zh' as const) : (options.lang ?? ('en' as const)),
-      count: options.count ?? 1,
-    };
+    const preferences = resolvePreferences(
+      { englishCount: 1, chineseCount: 0 },
+      {
+        language: options.lang === 'cn' ? 'zh' : options.lang,
+        count: options.count,
+        englishCount: options.enCount,
+        chineseCount: options.zhCount,
+      },
+    );
     const sample =
       'diff --git a/example.txt b/example.txt\nnew file mode 100644\n--- /dev/null\n+++ b/example.txt\n@@ -0,0 +1 @@\n+Hello world\n';
     const attempts: { provider: ProviderIdentity; diagnostic: AIDiagnostic }[] = [];
@@ -358,22 +387,32 @@ program
 program
   .command('config')
   .description('查看配置或保存通用偏好（隐藏 API Key）')
-  .option('--reset-preferences', '备份通用偏好并恢复双语 4 条默认值')
+  .option('--reset-preferences', '备份通用偏好并恢复 1 条英文默认值')
   .action(async (_options: unknown, command: Command) => {
     const options = command.optsWithGlobals<{
       lang?: Language | 'cn';
       count?: number;
+      enCount?: number;
+      zhCount?: number;
       resetPreferences?: boolean;
     }>();
-    if (options.lang || options.count || options.resetPreferences) {
+    if (
+      options.lang ||
+      options.count ||
+      options.enCount !== undefined ||
+      options.zhCount !== undefined ||
+      options.resetPreferences
+    ) {
       const previous = options.resetPreferences
-        ? { language: 'both' as const, count: 4 }
+        ? { englishCount: 1, chineseCount: 0 }
         : await loadPreferences();
       if (options.resetPreferences) await backupConfig(`${configPath()}.preferences.json`);
-      const preferences = {
-        language: options.lang === 'cn' ? ('zh' as const) : (options.lang ?? previous.language),
-        count: options.count ?? previous.count,
-      };
+      const preferences = resolvePreferences(previous, {
+        language: options.lang === 'cn' ? 'zh' : options.lang,
+        count: options.count,
+        englishCount: options.enCount,
+        chineseCount: options.zhCount,
+      });
       await savePreferences(preferences);
       console.log(
         `通用偏好已保存：${configPath()}.preferences.json\n${JSON.stringify(preferences, null, 2)}`,

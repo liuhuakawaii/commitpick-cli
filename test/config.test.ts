@@ -203,13 +203,13 @@ test('saved AI connection and preferences have independent ownership', async (t)
     { protocol: 'responses', endpoint: 'https://example.com/v1', apiKey: '', model: 'm' },
     path,
   );
-  assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 1, chineseCount: 0 });
   await savePreferences({ language: 'zh', count: 2 }, path);
   const saved = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(saved.language, undefined);
   assert.equal(saved.count, undefined);
   assert.equal((await loadConfig(path, {}))?.[0]?.model, 'm');
-  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 2 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 0, chineseCount: 2 });
 });
 test('provider transport settings round trip and reject invalid values', async (t) => {
   const { saveConfig, loadConfig } = await configModule();

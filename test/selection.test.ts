@@ -7,19 +7,37 @@ async function selectionModule() {
   return module;
 }
 
-test('editing validates the subject and returns it without regenerating', async () => {
+test('selection offers copy, regeneration and preview without candidate editing', async () => {
   const { selectMessage } = await selectionModule();
-  const choices = ['edit:0', 'copy:0'];
-  const result = await selectMessage(['fix: prevent duplicate refresh'], {
-    select: async () => choices.shift()!,
-    input: async (options) => {
-      assert.notEqual(options.validate?.('invalid'), true);
-      assert.equal(options.validate?.('fix(auth): reuse pending refresh'), true);
-      return 'fix(auth): reuse pending refresh';
+  let previews = 0;
+  let menus = 0;
+  const initial = ['fix: prevent duplicate refresh'];
+  const result = await selectMessage(
+    initial,
+    {
+      select: async ({ choices }) => {
+        assert.deepEqual(
+          choices.map((choice) => choice.value),
+          ['copy:0', 'hint', 'retry', 'preview'],
+        );
+        return menus++ === 0 ? 'preview' : 'copy:0';
+      },
+      input: async () => {
+        throw new Error('selection must not open an editor');
+      },
+      output: () => {},
     },
-    output: () => {},
-  });
-  assert.equal(result, 'fix(auth): reuse pending refresh');
+    {
+      regenerate: async () => {
+        throw new Error('selection must not request AI');
+      },
+      preview: () => {
+        previews++;
+      },
+    },
+  );
+  assert.equal(result, initial[0]);
+  assert.equal(previews, 1);
 });
 
 test('regeneration failure keeps previous candidates and retains an explicit hint', async () => {

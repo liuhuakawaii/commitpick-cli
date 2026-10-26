@@ -1,4 +1,9 @@
-import { candidateLanguages, type Config, type AIProvider, type Preferences } from './config.js';
+import {
+  candidateLanguages,
+  type Config,
+  type AIProvider,
+  type GenerationPreferences,
+} from './config.js';
 import {
   createProxyAgent,
   resolveProxyRoutes,
@@ -175,7 +180,7 @@ export type ProviderIdentity = Pick<AIProvider, 'name' | 'protocol' | 'endpoint'
 
 export async function generateWithFallback(
   providers: readonly AIProvider[],
-  preferences: Preferences,
+  preferences: GenerationPreferences,
   diff: string,
   options: {
     hint?: string;
@@ -400,7 +405,7 @@ export async function generateMessages(
     proxyOptions?: ResolveProxyOptions;
   } = {},
 ): Promise<string[]> {
-  const languages = candidateLanguages(config.language, config.count);
+  const languages = candidateLanguages(config);
   const rules = [
     ...(languages.includes('en')
       ? ['en: English imperative; aim for <=50 characters for the entire subject.']
@@ -409,7 +414,7 @@ export async function generateMessages(
       ? ['zh: Simplified Chinese; aim for 8–18 characters in the description.']
       : []),
   ].join('\n');
-  const system = `Return ONLY {"messages":[...]} with exactly ${config.count} distinct strings, ordered: ${languages.join(', ')}. No extra items or translations.
+  const system = `Return ONLY {"messages":[...]} with exactly ${languages.length} distinct strings, ordered: ${languages.join(', ')}. No extra items or translations.
 ${rules}
 Each is a single-line Conventional Commit: type(scope): description. Types: feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert. Scope is optional, English [a-zA-Z0-9._/-]; use ! only for evidenced breaking changes. ASCII colon and space; <=100 characters; no body, markdown, emoji or final punctuation.
 Describe the SAME complete change set with consistent type, scope and facts. Vary action verbs or sentence structure without duplicates or invented behavior. Use one precise action and its object; accuracy beats soft length targets. Avoid filler, file lists and generic "update files".
@@ -433,8 +438,13 @@ Use all file operations and visible source evidence. Omitted/binary/generated co
         }),
     ...(config.outputMode === 'json-schema'
       ? config.protocol === 'responses'
-        ? { text: { format: { type: 'json_schema', ...candidateSchema(config.count) } } }
-        : { response_format: { type: 'json_schema', json_schema: candidateSchema(config.count) } }
+        ? { text: { format: { type: 'json_schema', ...candidateSchema(languages.length) } } }
+        : {
+            response_format: {
+              type: 'json_schema',
+              json_schema: candidateSchema(languages.length),
+            },
+          }
       : {}),
   };
   const started = performance.now();
@@ -499,7 +509,7 @@ Use all file operations and visible source evidence. Omitted/binary/generated co
     )
       throw new AIError('Chat Completions 生成未完成或被拒绝，请检查输出限制。');
     stage = 'candidate';
-    const messages = parseMessages(content, config.count);
+    const messages = parseMessages(content, languages.length);
     validateLanguages(messages, languages);
     options.onDiagnostic?.({
       stage: 'complete',

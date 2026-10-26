@@ -84,7 +84,7 @@ test('adding, reordering and editing providers preserves siblings, preferences a
   assert.equal(saved[0]?.model, 'faster-model');
   assert.equal(saved[0]?.apiKey, 'backup-key');
   assert.equal(saved[1]?.apiKey, 'primary-key');
-  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 5 });
+  assert.deepEqual(await loadPreferences(path), { englishCount: 0, chineseCount: 5 });
   const before = await readFile(path, 'utf8');
   await assert.rejects(setupConfig(path, prompts({ 操作: 'add', 名称: 'primary' })), /名称|重复/);
   assert.equal(await readFile(path, 'utf8'), before);

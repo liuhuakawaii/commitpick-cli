@@ -185,12 +185,12 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     assert.ok(result.stdout.startsWith('{'), `CLI must return JSON: ${result.stderr}`);
     const data = JSON.parse(result.stdout);
     assert.equal(data.scope, 'worktree');
-    assert.equal(data.messages.length, 4);
+    assert.equal(data.messages.length, 1);
     if (args.includes('zh')) assert.match(data.messages[0], /增加/);
     else assert.match(data.messages[0], /greeting/);
     assert.equal(git('status', '--porcelain'), before);
   }
-  const picked = await run(['--pick', '2'], cwd, env);
+  const picked = await run(['--pick', '2', '--count', '2'], cwd, env);
   assert.equal(picked.stdout.trim(), 'feat: expose greeting configuration');
   assert.equal(calls, 4);
   await assert.rejects(run(['--staged', '--worktree'], cwd, env));
@@ -205,7 +205,7 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   assert.match(shown.stdout, /test-model/);
   await writeFile(join(cwd, 'bundle.min.js'), 'minifiedBundle();'.repeat(40_000));
   const large = await run(['--json'], cwd, env);
-  assert.equal(JSON.parse(large.stdout).messages.length, 4);
+  assert.equal(JSON.parse(large.stdout).messages.length, 1);
   assert.match(large.stderr, /已自动整理/);
   assert.match(lastDiff, /hello.ts/);
   assert.match(lastDiff, /bundle.min.js/);
@@ -231,6 +231,23 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
   const offline = await run(['--local', '--json'], cwd, env);
   assert.equal(JSON.parse(offline.stdout).source, 'local');
   assert.equal(calls, 7, 'explicit local mode must not contact the configured AI');
+  responseStatus = 200;
+  for (const protocol of ['responses', 'chat-completions']) {
+    for (const args of [[], ['test']]) {
+      const result = await run([...args, '--en-count', '1', '--zh-count', '2', '--json'], cwd, {
+        ...env,
+        CMSG_PROTOCOL: protocol,
+      });
+      const data = JSON.parse(result.stdout);
+      assert.deepEqual(data.messages, [
+        'feat: add greeting flag',
+        'feat: 增加问候开关',
+        'feat: 提供问候配置',
+      ]);
+      if (!args.length) assert.deepEqual(data.languages, ['en', 'zh', 'zh']);
+    }
+  }
+  assert.equal(calls, 11, 'custom language allocation still sends exactly one request');
 });
 
 test('missing config generates local candidates without setup or network and preserves Git', async (t) => {
@@ -250,7 +267,7 @@ test('missing config generates local candidates without setup or network and pre
   const result = await run(['zh', '--json'], cwd, env);
   const data = JSON.parse(result.stdout);
   assert.equal(data.source, 'local');
-  assert.equal(data.messages.length, 4);
+  assert.equal(data.messages.length, 1);
   assert.match(data.messages[0], /file.ts/);
   assert.match(result.stderr, /本地规则/);
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' }), before);

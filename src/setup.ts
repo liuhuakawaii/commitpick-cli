@@ -7,7 +7,6 @@ import {
   savePreferences,
   loadPreferences,
   type AIProvider,
-  type Language,
   type ProviderProxyMode,
   type Protocol,
 } from './config.js';
@@ -53,17 +52,30 @@ export async function setupConfig(
     : 'add';
   if (action === 'preferences') {
     const preferences = await loadPreferences(path);
-    const language = await ui.select({
-      message: '默认提交信息语言',
-      default: preferences.language,
-      choices: ['both', 'en', 'zh'].map((value) => ({ name: value, value })),
-    });
-    const count = await ui.input({
-      message: '默认候选数量（1–5）',
-      default: String(preferences.count),
-      validate: (value) => /^[1-5]$/.test(value) || '请输入 1–5。',
-    });
-    await savePreferences({ language: language as Language, count: Number(count) }, path);
+    const englishCount = Number(
+      await ui.input({
+        message: '默认英文数量（0–5，0 为关闭）',
+        default: String(preferences.englishCount),
+        validate: (value) => /^[0-5]$/.test(value) || '请输入 0–5。',
+      }),
+    );
+    const chineseCount = Number(
+      await ui.input({
+        message: '默认中文数量（0–5，中英文合计 1–5 条）',
+        default: String(
+          Math.max(
+            englishCount === 0 ? 1 : 0,
+            Math.min(preferences.chineseCount, 5 - englishCount),
+          ),
+        ),
+        validate: (value) =>
+          (/^[0-5]$/.test(value) &&
+            englishCount + Number(value) >= 1 &&
+            englishCount + Number(value) <= 5) ||
+          '请输入 0–5，中英文合计须为 1–5 条。',
+      }),
+    );
+    await savePreferences({ englishCount, chineseCount }, path);
     return providers;
   }
   if (action === 'order') {

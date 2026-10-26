@@ -1,4 +1,4 @@
-import { candidateLanguages, type Language } from './config.js';
+import { candidateLanguages, type GenerationPreferences } from './config.js';
 import type { ChangedFile } from './git.js';
 
 // These rules describe observable file operations, never infer a bug or feature.
@@ -41,11 +41,9 @@ function displayPath(path: string): string {
 
 export function generateLocalMessages(
   files: ChangedFile[],
-  options: { language: Language; count: number },
+  options: GenerationPreferences,
 ): string[] {
   if (!files.length) throw new Error('没有可生成提交信息的改动。');
-  if (!Number.isInteger(options.count) || options.count < 1 || options.count > 5)
-    throw new Error('候选数量必须是 1 到 5 的整数。');
   const categories = new Set(
     files.flatMap((file) => [
       category(file.path),
@@ -56,7 +54,7 @@ export function generateLocalMessages(
   const groups = new Map<ChangedFile['status'], number>();
   for (const file of files) groups.set(file.status, (groups.get(file.status) ?? 0) + 1);
   const indices = { en: 0, zh: 0 };
-  return candidateLanguages(options.language, options.count).map((language) => {
+  return candidateLanguages(options).map((language) => {
     const i = indices[language]++;
     const zh = language === 'zh';
     const clauses = [...groups].map(([status, count]) => {

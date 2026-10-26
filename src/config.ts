@@ -6,37 +6,96 @@ import { randomUUID } from 'node:crypto';
 
 export type Language = 'zh' | 'en' | 'both';
 export interface Preferences {
+  englishCount: number;
+  chineseCount: number;
+}
+interface LegacyPreferences {
   language: Language;
   count: number;
 }
+export type GenerationPreferences = Preferences | LegacyPreferences;
 
-export function candidateLanguages(language: Language, count: number): ('en' | 'zh')[] {
-  return Array.from({ length: count }, (_, i) =>
-    language === 'both' ? (i < Math.ceil(count / 2) ? 'en' : 'zh') : language,
-  );
+export function candidateLanguages(value: GenerationPreferences): ('en' | 'zh')[] {
+  const { englishCount, chineseCount } = validatePreferences(value);
+  return [...Array<'en'>(englishCount).fill('en'), ...Array<'zh'>(chineseCount).fill('zh')];
 }
 
 function validatePreferences(value: unknown): Preferences {
-  const data = value as Partial<Preferences> | null;
-  if (!data || !['en', 'zh', 'both'].includes(data.language ?? ''))
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('通用偏好必须是 JSON 对象。');
+  const data = value as Record<string, unknown>;
+  if ('englishCount' in data || 'chineseCount' in data) {
+    const { englishCount, chineseCount } = data;
+    if (
+      typeof englishCount !== 'number' ||
+      typeof chineseCount !== 'number' ||
+      !Number.isInteger(englishCount) ||
+      !Number.isInteger(chineseCount) ||
+      englishCount < 0 ||
+      chineseCount < 0 ||
+      englishCount + chineseCount < 1 ||
+      englishCount + chineseCount > 5
+    )
+      throw new Error('中英文数量必须是 0 到 5 的整数，合计 1 到 5 条。');
+    return { englishCount, chineseCount };
+  }
+  if (typeof data.language !== 'string' || !['en', 'zh', 'both'].includes(data.language))
     throw new Error('配置语言只支持 zh、en 或 both。');
-  if (!Number.isInteger(data.count) || data.count! < 1 || data.count! > 5)
+  if (
+    typeof data.count !== 'number' ||
+    !Number.isInteger(data.count) ||
+    data.count < 1 ||
+    data.count > 5
+  )
     throw new Error('候选数量必须是 1 到 5 的整数。');
-  return { language: data.language!, count: data.count! };
+  const englishCount =
+    data.language === 'en' ? data.count : data.language === 'zh' ? 0 : Math.ceil(data.count / 2);
+  return { englishCount, chineseCount: data.count - englishCount };
+}
+
+/** Resolve CLI overrides without persisting temporary values or duplicating count state. */
+export function resolvePreferences(
+  previous: Preferences,
+  overrides: {
+    language?: Language;
+    count?: number;
+    englishCount?: number;
+    chineseCount?: number;
+  },
+): Preferences {
+  if (overrides.englishCount !== undefined || overrides.chineseCount !== undefined) {
+    if (overrides.language !== undefined || overrides.count !== undefined)
+      throw new Error('--en-count / --zh-count 不能与语言参数、--lang 或 --count 混用。');
+    return validatePreferences({
+      englishCount: overrides.englishCount ?? previous.englishCount,
+      chineseCount: overrides.chineseCount ?? previous.chineseCount,
+    });
+  }
+  if (overrides.language === undefined && overrides.count === undefined)
+    return validatePreferences(previous);
+  const language =
+    overrides.language ??
+    (previous.englishCount === 0 ? 'zh' : previous.chineseCount === 0 ? 'en' : 'both');
+  const count = overrides.count ?? previous.englishCount + previous.chineseCount;
+  return validatePreferences({ language, count });
 }
 
 export async function loadPreferences(path = configPath()): Promise<Preferences> {
   try {
     return validatePreferences(JSON.parse(await readFile(`${path}.preferences.json`, 'utf8')));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { language: 'both', count: 4 };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { englishCount: 1, chineseCount: 0 };
     throw new Error('无法读取通用偏好；可运行 cmsg config --reset-preferences 恢复默认值。', {
       cause: error,
     });
   }
 }
 
-export async function savePreferences(value: Preferences, path = configPath()): Promise<void> {
+export async function savePreferences(
+  value: GenerationPreferences,
+  path = configPath(),
+): Promise<void> {
   await saveJson(validatePreferences(value), `${path}.preferences.json`);
 }
 
@@ -61,7 +120,7 @@ export interface AIConfig {
   connectTimeoutMs?: number;
   outputMode?: 'text' | 'json-schema';
 }
-export interface Config extends AIConfig, Preferences {}
+export type Config = AIConfig & GenerationPreferences;
 export interface AIProvider extends AIConfig {
   name: string;
   timeoutMs: number;
