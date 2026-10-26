@@ -33,19 +33,21 @@ test('setup directly configures an API and persists an independently named sourc
         return 'chat-completions';
       }
       if (message.includes('连接方式')) return 'auto';
-      assert.match(message, /语言/);
-      return 'both';
+      assert.match(message, /输出格式/);
+      return 'text';
     },
   });
   assert.equal(selections.length, 3);
   assert.deepEqual(await loadConfig(path, {}), [
     {
       name: 'provider-1',
-      timeoutMs: 30000,
+      timeoutMs: 60000,
       protocol: 'chat-completions',
       endpoint: 'https://api.example/v1/chat/completions',
       model: 'example-model',
       apiKey: 'api-key',
+      connectTimeoutMs: 5000,
+      outputMode: 'text',
     },
   ]);
   assert.equal(config.length, 1);
@@ -58,7 +60,7 @@ test('setup directly configures an API and persists an independently named sourc
       assert.match(message, /保留/);
       return '';
     },
-    select: async ({ default: value }) => value,
+    select: async ({ message, default: value }) => (message.includes('字段') ? 'all' : value),
   });
   assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, 'api-key');
 
@@ -118,7 +120,7 @@ test('explicit reset backs up malformed configuration before replacing it', asyn
             : value!,
       password: async () => '',
       select: async ({ message }) =>
-        message.includes('协议') ? 'responses' : message.includes('连接方式') ? 'auto' : 'both',
+        message.includes('协议') ? 'responses' : message.includes('连接方式') ? 'auto' : 'text',
     },
     { reset: true },
   );
@@ -144,13 +146,17 @@ test('setup asks for address, masked key, model and language; preserves saved ke
       return 'test-key';
     },
     select: async ({ message }) =>
-      message.includes('协议') ? 'chat-completions' : message.includes('连接方式') ? 'auto' : 'zh',
+      message.includes('协议')
+        ? 'chat-completions'
+        : message.includes('连接方式')
+          ? 'auto'
+          : 'text',
   });
   const saved = await loadConfig(path, {});
   assert.equal(saved?.[0]?.endpoint, 'https://relay.example/v1/chat/completions');
   assert.equal(saved?.[0]?.apiKey, 'test-key');
   assert.equal(saved?.[0]?.model, 'fast-model');
-  assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 4 });
+  assert.deepEqual(await loadPreferences(path), { language: 'both', count: 4 });
   assert.equal(passwordCalls, 1);
   await savePreferences({ language: 'zh', count: 5 }, path);
   await module.setupConfig(path, {
@@ -196,16 +202,18 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
     select: async ({ message }) =>
       message.startsWith('配置操作')
         ? 'edit'
-        : message.includes('协议')
-          ? 'responses'
-          : message.includes('连接方式')
-            ? 'auto'
-            : 'zh',
+        : message.includes('字段')
+          ? 'protocol'
+          : message.includes('协议')
+            ? 'responses'
+            : message.includes('连接方式')
+              ? 'auto'
+              : 'zh',
   });
   assert.deepEqual(await loadConfig(path, {}), [
     {
       name: 'default',
-      timeoutMs: 30000,
+      timeoutMs: 60000,
       protocol: 'responses',
       endpoint: 'https://relay.example/custom/v1/responses',
       apiKey: 'saved-key',
@@ -213,4 +221,85 @@ test('setup switches a saved Chat Completions endpoint to Responses without pers
     },
   ]);
   assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 5 });
+});
+test('editing only model preserves every other source field and skips preferences', async (t) => {
+  const { setupConfig } = await import('../src/setup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'field-edit-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  const provider = {
+    name: 'one',
+    protocol: 'responses' as const,
+    endpoint: 'https://example.com/v1/responses',
+    apiKey: 'secret',
+    model: 'old',
+    timeoutMs: 12345,
+    proxyMode: 'proxy' as const,
+    connectTimeoutMs: 2345,
+    outputMode: 'json-schema' as const,
+  };
+  await saveConfig([provider], path);
+  await setupConfig(path, {
+    select: async ({ message }) => (message.startsWith('配置操作') ? 'edit' : 'model'),
+    input: async ({ message }) => {
+      assert.match(message, /^模型名/);
+      return 'new';
+    },
+    password: async () => {
+      assert.fail('must not prompt key');
+    },
+  });
+  assert.deepEqual(await loadConfig(path, {}), [{ ...provider, model: 'new' }]);
+});
+test('endpoint field changes origin, asks fresh key even when empty, and cancellation is atomic', async (t) => {
+  const { setupConfig } = await import('../src/setup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'endpoint-edit-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  const provider = {
+    name: 'one',
+    protocol: 'responses' as const,
+    endpoint: 'https://old.example/v1/responses',
+    apiKey: '',
+    model: 'm',
+    timeoutMs: 12000,
+    proxyMode: 'direct' as const,
+    connectTimeoutMs: 987,
+    outputMode: 'json-schema' as const,
+  };
+  await saveConfig([provider], path);
+  await savePreferences({ language: 'zh', count: 5 }, path);
+  const before = await readFile(path, 'utf8');
+  const prefs = await readFile(`${path}.preferences.json`, 'utf8');
+  let keyCalls = 0;
+  const prompts = {
+    select: async ({ message, default: value }: { message: string; default: string }) => {
+      if (message.includes('字段')) assert.equal(value, 'model');
+      return message.startsWith('配置操作') ? 'edit' : 'endpoint';
+    },
+    input: async ({ message }: { message: string }) => {
+      assert.match(message, /^AI 地址/);
+      return 'https://new.example/custom';
+    },
+    password: async () => {
+      keyCalls++;
+      throw new Error('cancelled');
+    },
+  };
+  await assert.rejects(setupConfig(path, prompts), /cancelled/);
+  assert.equal(await readFile(path, 'utf8'), before);
+  assert.equal(await readFile(`${path}.preferences.json`, 'utf8'), prefs);
+  await setupConfig(path, {
+    ...prompts,
+    password: async ({ message }) => {
+      keyCalls++;
+      assert.doesNotMatch(message, /保留/);
+      return 'new-key';
+    },
+  });
+  assert.equal(keyCalls, 2);
+  assert.deepEqual(await loadConfig(path, {}), [
+    { ...provider, endpoint: 'https://new.example/custom/responses', apiKey: 'new-key' },
+  ]);
+  assert.equal(await readFile(`${path}.preferences.json`, 'utf8'), prefs);
 });

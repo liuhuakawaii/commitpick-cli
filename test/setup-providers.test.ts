@@ -15,7 +15,8 @@ function prompts(answers: Record<string, string> = {}, key = 'test-key'): UI {
     地址: 'AI 地址',
     模型名: '模型名',
     超时: '请求超时',
-    编辑: '选择要编辑',
+    编辑: '选择要编辑的来源',
+    字段: '选择要编辑的字段',
     移除: '选择要移除',
   };
   const answer = (message: string, fallback?: string) =>
@@ -75,7 +76,10 @@ test('adding, reordering and editing providers preserves siblings, preferences a
     (await loadConfig(path, {}))?.map((p) => p.name),
     ['backup', 'primary'],
   );
-  await setupConfig(path, prompts({ 操作: 'edit', 编辑: 'backup', 模型名: 'faster-model' }, ''));
+  await setupConfig(
+    path,
+    prompts({ 操作: 'edit', 编辑: 'backup', 字段: 'model', 模型名: 'faster-model' }, ''),
+  );
   const saved = (await loadConfig(path, {}))!;
   assert.equal(saved[0]?.model, 'faster-model');
   assert.equal(saved[0]?.apiKey, 'backup-key');
@@ -106,7 +110,7 @@ test('setup accepts millisecond precision and rejects invalid timeouts without r
   assert.equal((await loadConfig(path, {}))?.[0]?.timeoutMs, 1001);
   const before = await readFile(path, 'utf8');
   for (const timeout of ['0', '-1', '121', '1.0001', 'no']) {
-    await assert.rejects(setupConfig(path, prompts({ 超时: timeout })), /超时/);
+    await assert.rejects(setupConfig(path, prompts({ 字段: 'timeoutMs', 超时: timeout })), /超时/);
     assert.equal(await readFile(path, 'utf8'), before);
   }
 });
@@ -116,6 +120,9 @@ test('editing a primary source into a different endpoint does not carry its cred
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'config.json');
   await setupConfig(path, prompts({ 模型名: 'primary-model', 名称: 'primary' }, 'primary-key'));
-  await setupConfig(path, prompts({ 地址: 'http://localhost:1234/v1', 模型名: 'local-model' }, ''));
+  await setupConfig(
+    path,
+    prompts({ 字段: 'all', 地址: 'http://localhost:1234/v1', 模型名: 'local-model' }, ''),
+  );
   assert.equal((await loadConfig(path, {}))?.[0]?.apiKey, '');
 });

@@ -151,7 +151,7 @@ test('Responses sends one stateless request and extracts assistant text after re
       endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/custom/v1/responses`,
       apiKey: 'test-key',
       model: 'relay-model',
-      language: 'zh',
+      language: 'en',
       count: 3,
     },
     'actual-diff',
@@ -165,7 +165,7 @@ test('Responses sends one stateless request and extracts assistant text after re
   assert.equal(request.body.model, 'relay-model');
   assert.equal(request.body.store, false);
   assert.equal(request.body.stream, false);
-  assert.match(request.body.instructions, /Simplified Chinese/);
+  assert.match(request.body.instructions, /English imperative/);
   assert.deepEqual(JSON.parse(request.body.input[0].content), {
     hint: 'intent',
     diff: 'actual-diff',

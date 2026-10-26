@@ -58,6 +58,8 @@ export interface AIConfig {
   apiKey: string;
   model: string;
   proxyMode?: ProviderProxyMode;
+  connectTimeoutMs?: number;
+  outputMode?: 'text' | 'json-schema';
 }
 export interface Config extends AIConfig, Preferences {}
 export interface AIProvider extends AIConfig {
@@ -108,12 +110,27 @@ function validateConfig(value: unknown): AIConfig {
     !['auto', 'proxy', 'direct'].includes(data.proxyMode as string)
   )
     throw new Error('配置中的 proxyMode 只支持 auto、proxy 或 direct。');
+  if (
+    data.connectTimeoutMs !== undefined &&
+    (!Number.isInteger(data.connectTimeoutMs) ||
+      Number(data.connectTimeoutMs) < 1 ||
+      Number(data.connectTimeoutMs) > 120000)
+  )
+    throw new Error('connectTimeoutMs 必须是 1–120000 的整数。');
+  if (data.outputMode !== undefined && !['text', 'json-schema'].includes(data.outputMode as string))
+    throw new Error('outputMode 只支持 text 或 json-schema。');
   const endpoint = normalizeEndpoint(data.endpoint, data.protocol as Protocol | undefined);
   return {
     protocol: endpoint.endsWith('/responses') ? 'responses' : 'chat-completions',
     endpoint,
     apiKey: (data.apiKey as string | undefined)?.trim() ?? '',
     model: data.model.trim(),
+    ...(data.connectTimeoutMs !== undefined
+      ? { connectTimeoutMs: data.connectTimeoutMs as number }
+      : {}),
+    ...(data.outputMode !== undefined
+      ? { outputMode: data.outputMode as 'text' | 'json-schema' }
+      : {}),
     ...(data.proxyMode !== undefined ? { proxyMode: data.proxyMode as ProviderProxyMode } : {}),
   };
 }
@@ -129,7 +146,7 @@ function validateProviders(value: unknown): AIProvider[] {
       throw new Error('来源名称需要 1–40 个英文字母、数字、点、下划线或连字符。');
     if (names.has(name)) throw new Error('AI 来源名称不能重复。');
     names.add(name);
-    const timeoutMs = entry.timeoutMs ?? 30_000;
+    const timeoutMs = entry.timeoutMs ?? 60_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
       throw new Error('来源超时 timeoutMs 必须是 1–120000 的整数（毫秒）。');
     return { name, ...validateConfig(entry), timeoutMs };

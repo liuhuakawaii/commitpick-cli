@@ -7,7 +7,7 @@
 - `src/git.ts` 拥有改动范围、Git 流式读取和模型输入整理。
 - `src/config.ts` 拥有配置路径、有序来源列表、校验、旧单来源兼容、环境变量覆盖和原子保存。
 - `src/setup.ts` 拥有交互式配置流程；不把环境变量中的临时值写入持久配置。
-- 配置向导管理来源的添加、编辑、优先级和移除；移除前备份。新增来源不继承 Key；编辑时只在同一 origin 下保留旧 Key。
+- 配置向导管理来源的添加、编辑、优先级和移除；移除前备份。编辑支持单字段或全部字段，通用偏好独立管理，取消不保存。新增来源不继承 Key；编辑时只在同一 origin 下保留旧 Key。
 - `src/ai.ts` 拥有 Responses / Chat Completions 请求、按来源优先级回退、独立超时和候选格式校验。
 - `src/proxy.ts` 拥有环境变量及 Windows 静态系统代理解析、绕过列表和请求 dispatcher 创建。
 - `src/local.ts` 拥有本地文件操作到候选措辞的确定性规则，不推断代码语义。
@@ -29,13 +29,13 @@
 - 二进制和非 UTF-8 新文件只提供元数据。大文件流式读取，避免完整缓冲构建产物。
 - `--json` 的 stdout 只能是 JSON；进度和范围写 stderr。API Key 不出现在输出中。
 - 配置存于用户配置目录，不存进项目。`CMSG_CONFIG` 可隔离测试配置。语言与数量独立保存在 `<配置路径>.preferences.json`，旧 AI 文件中的 language/count 不决定生成默认值；`--local` 不读取 AI 配置。显式 reset 先备份再替换。
-- `providers` 数组顺序决定优先级，名称唯一，来源独立保存协议、地址、Key、模型、timeoutMs 及可选 proxyMode（auto/proxy/direct，默认 auto）。旧单来源以 default 名称只读兼容，下次保存升级。设置 AI 环境变量覆盖时仅使用覆盖后的首个来源，不回退到保存列表；CMSG_CONFIG 仅选择配置路径。
+- `providers` 数组顺序决定优先级，名称唯一，来源独立保存协议、地址、Key、模型、timeoutMs（缺省 60000）、可选 connectTimeoutMs（缺省 5000）、outputMode（text/json-schema，默认 text）及可选 proxyMode（auto/proxy/direct，默认 auto）。旧单来源以 default 名称只读兼容，下次保存升级。设置 AI 环境变量覆盖时仅使用覆盖后的首个来源，不回退到保存列表；CMSG_CONFIG 仅选择配置路径。
 - `--preview` 不读取 AI 配置、不调用模型，显示本次文件范围及待发送 diff；`--files` 在 stderr 列出文件。生成 JSON 附带对应的 languages 和 AI 成功来源 provider（不含 Key），usage 仅采用成功来源实际返回的数值，不表示整条回退链费用。
-- 完整 diff 阈值 24,000 bytes，源码细节预算 20,000 bytes；文件清单和统计另计，不能声称总输入有严格上限。构建产物和锁文件无论大小始终省略正文。任意目录下的 `AGENTS.md`、`README.md`，以及 `test/`、`tests/`、`__tests__/` 目录和 `*.test.*`、`*.spec.*` 文件同样始终省略正文（大小写不敏感），保留全部文件操作及增删行数；纯文档和纯测试提交仍可生成候选。
+- 完整 diff 阈值 16,000 bytes，源码细节预算 12,000 bytes（包含详情标题），单文件完整细节 6,000 bytes；摘要不保留重复路径标记和 Git hash，截断不拆开 Unicode 字符；文件清单和统计另计，不能声称总输入有严格上限。构建产物和锁文件无论大小始终省略正文。任意目录下的 `AGENTS.md`、`README.md`，以及 `test/`、`tests/`、`__tests__/` 目录和 `*.test.*`、`*.spec.*` 文件同样始终省略正文（大小写不敏感），保留全部文件操作及增删行数；纯文档和纯测试提交仍可生成候选。
 - 一次生成顺序尝试来源，每个来源最多请求一次；超时、网络或 HTTP 错误、未完成响应和候选格式错误触发下一来源，成功即停止，全部失败报错，不回退本地规则。stderr 显示尝试与失败，不输出原始服务商错误或 Key。菜单重新生成只在用户显式选择后发起，复用快照并从首个来源重试，全部失败保留已有候选。
-- AI 请求按来源的 proxyMode 选择网络路径：auto 在单来源 timeoutMs 总预算内依次尝试 HTTP_PROXY / HTTPS_PROXY（小写优先）、Windows 当前用户 Internet Settings 中的静态系统代理和直连；proxy 只使用代理，direct 只直连。保留本机地址及系统绕过规则，NO_PROXY 补充绕过规则，`*` 强制直连；PAC 只显示诊断并直连，不执行脚本。只对网络连接失败和超时尝试下一路径，不重复请求 HTTP、JSON 或候选格式错误。显示代理来源、白名单网络错误码和检查方向，不输出原始错误文本或代理凭据；请求结束销毁代理连接。
+- AI 请求按来源的 proxyMode 选择网络路径：auto 在单来源 timeoutMs 总预算内依次尝试 HTTP_PROXY / HTTPS_PROXY（小写优先）、Windows 当前用户 Internet Settings 中的静态系统代理和直连；proxy 只使用代理，direct 只直连。保留本机地址及系统绕过规则，NO_PROXY 补充绕过规则，`*` 强制直连；PAC 只显示诊断并直连，不执行脚本。仅在目标连接建立前失败或建连超时时尝试下一路径；连接建立后使用剩余总预算，等待响应超时和断流不重发本来源 POST。HTTP、JSON 或候选格式错误也不重复请求。实际路径应用 NO_PROXY 后去重；每次生成缓存系统代理读取结果，下一次生成刷新，读取失败与代理未启用分别诊断。显示代理来源、白名单网络错误码和检查方向，不输出原始错误文本或代理凭据；请求结束销毁代理连接。
 - `protocol` 支持 `responses` 和 `chat-completions`；旧配置未指定协议时，从完整接口后缀推断，否则保持 Chat Completions。显式协议会替换已知接口后缀，保留路径前缀；不自动探测或重试其他协议。
-- Responses 使用非流式请求及 `store: false`，只接受完成状态中的 assistant 文本。`cmsg test` 使用固定示例按同一优先级回退，成功即停止，不读取 Git 或仓库文件；评估脚本也复用回退流程并记录实际尝试次数。
+- Responses 使用非流式请求及 `store: false`，只接受完成状态中的 assistant 文本。单语言提示词不包含另一语言的生成要求，所有语言模式都做语言校验。outputMode=json-schema 显式启用结构化输出，不自动降级或探测。`cmsg test` 使用固定示例按同一优先级回退，成功即停止，不读取 Git 或仓库文件；支持 --provider 指定生效来源、--all 逐来源验收和 --lang/--count。JSON 保留结构化阶段、HTTP 状态、耗时及请求字节数，不含原始服务端正文；评估脚本也复用回退流程并记录实际尝试次数。
 
 ## 开发与验证
 

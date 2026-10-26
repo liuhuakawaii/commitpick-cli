@@ -211,3 +211,28 @@ test('saved AI connection and preferences have independent ownership', async (t)
   assert.equal((await loadConfig(path, {}))?.[0]?.model, 'm');
   assert.deepEqual(await loadPreferences(path), { language: 'zh', count: 2 });
 });
+test('provider transport settings round trip and reject invalid values', async (t) => {
+  const { saveConfig, loadConfig } = await configModule();
+  const dir = await mkdtemp(join(tmpdir(), 'settings-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'config.json');
+  const base = {
+    protocol: 'responses' as const,
+    endpoint: 'https://example.com',
+    apiKey: '',
+    model: 'm',
+  };
+  await saveConfig({ ...base, connectTimeoutMs: 1234, outputMode: 'json-schema' } as any, path);
+  const provider = (await loadConfig(path, {}))![0]!;
+  assert.equal(provider.timeoutMs, 60000);
+  assert.equal((provider as any).connectTimeoutMs, 1234);
+  assert.equal((provider as any).outputMode, 'json-schema');
+  for (const extra of [
+    { connectTimeoutMs: 0 },
+    { connectTimeoutMs: 1.2 },
+    { connectTimeoutMs: 120001 },
+    { outputMode: 'other' },
+  ]) {
+    await assert.rejects(saveConfig({ ...base, ...extra } as any, path));
+  }
+});

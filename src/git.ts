@@ -5,9 +5,9 @@ import { join } from 'node:path';
 
 const execute = promisify(execFile);
 // Context budgets select detail, never reject a change set or omit file operations.
-const FULL_CONTEXT_BYTES = 24_000;
-const DETAIL_BYTES = 20_000;
-const FILE_DETAIL_BYTES = 8_000;
+const FULL_CONTEXT_BYTES = 16_000;
+const DETAIL_BYTES = 12_000;
+const FILE_DETAIL_BYTES = 6_000;
 export type Scope = 'auto' | 'staged' | 'worktree';
 export interface ChangedFile {
   status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
@@ -46,6 +46,13 @@ function prefix(text: string, bytes: number): string {
   return new TextDecoder().decode(Buffer.from(text).subarray(0, Math.max(0, bytes)), {
     stream: true,
   });
+}
+
+function clipCodePoints(text: string, length: number): string {
+  let end = Math.max(0, Math.min(length, text.length));
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end);
 }
 
 function evenly<T>(items: T[], count: number): T[] {
@@ -90,7 +97,8 @@ class FileChange {
     if (!this.blockLines) this.block = this.hunk ? `${this.hunk}\n` : '';
     // Sample short windows throughout a large file, rather than only its beginning.
     if (this.block.length < 1200) {
-      this.block += line.length > 300 ? line.slice(0, 300) + ' [line excerpt]\n' : line + '\n';
+      this.block +=
+        line.length > 300 ? clipCodePoints(line, 300) + ' [line excerpt]\n' : line + '\n';
     }
     if (++this.blockLines === 16) this.flush();
   }
@@ -173,7 +181,7 @@ class ChangeContext {
     const overview = this.files
       .map(
         (file, i) =>
-          `[File ${i + 1}]\n${file.metadata.join('\n')}\nChanged lines: +${file.added} -${file.removed}` +
+          `[File ${i + 1}]\n${file.metadata.filter((line) => !/^(?:index |--- |\+\+\+ )/.test(line)).join('\n')}\nChanged lines: +${file.added} -${file.removed}` +
           (file.omissionReason ? '\n' + file.omissionReason : ''),
       )
       .join('\n\n');
@@ -184,10 +192,16 @@ class ChangeContext {
       .filter(({ file }) => !file.omissionReason)
       .sort((a, b) => (a.file.full?.length ?? Infinity) - (b.file.full?.length ?? Infinity));
     for (const [position, { file, i }] of candidates.entries()) {
-      const text = file.render(Math.floor(budget / (candidates.length - position)));
+      const header = `[File ${i + 1}: patch detail]\n`;
+      const text = file.render(
+        Math.max(
+          0,
+          Math.floor(budget / (candidates.length - position)) - Buffer.byteLength(header) - 1,
+        ),
+      );
       if (text) {
-        details.push(`[File ${i + 1}: patch detail]\n${text}`);
-        budget -= Buffer.byteLength(text);
+        details.push(header + text);
+        budget -= Buffer.byteLength(header + text) + 1;
       }
     }
     return {
@@ -210,8 +224,11 @@ async function* lines(chunks: AsyncIterable<Buffer>, fatal = false) {
     const parts = decoder.decode(chunk, { stream: true }).split('\n');
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
-      if (pending.length + part.length > 4096) clipped = true;
-      pending += part.slice(0, Math.max(0, 4096 - pending.length));
+      if (!clipped) {
+        const available = Math.max(0, 4096 - pending.length);
+        clipped = part.length > available;
+        pending += clipCodePoints(part, available);
+      }
       if (i < parts.length - 1) {
         yield { line: pending + (clipped ? ' [line excerpt; remainder omitted]' : ''), clipped };
         pending = '';

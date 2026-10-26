@@ -14,7 +14,7 @@ import { collectChanges } from './git.js';
 import { setupConfig } from './setup.js';
 import { copyToClipboard } from './clipboard.js';
 import { generateLocalMessages } from './local.js';
-import type { TokenUsage, ProviderIdentity } from './ai.js';
+import type { TokenUsage, ProviderIdentity, AIDiagnostic } from './ai.js';
 
 const metadata = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
@@ -28,6 +28,19 @@ const generationDiagnostics = {
   onFailure: (provider: ProviderIdentity, reason: string) =>
     console.error(`来源 ${provider.name} 失败：${reason}。`),
   onRoute: (description: string) => console.error(`网络路径：${description}`),
+  onDiagnostic: (provider: ProviderIdentity, diagnostic: AIDiagnostic) => {
+    const stages = {
+      configuration: '配置',
+      connection: '连接',
+      response: '响应',
+      http: 'HTTP',
+      candidate: '候选校验',
+      complete: '完成',
+    };
+    console.error(
+      `来源 ${provider.name}：${stages[diagnostic.stage]} · ${diagnostic.code} · ${diagnostic.elapsedMs ?? 0}ms · 请求 ${diagnostic.requestBytes ?? 0} bytes${diagnostic.httpStatus ? ` · HTTP ${diagnostic.httpStatus}` : ''}`,
+    );
+  },
 };
 function countArgument(value: string): number {
   if (!/^[1-5]$/.test(value)) throw new InvalidArgumentError('请输入 1 到 5 的整数。');
@@ -256,36 +269,90 @@ program
   .command('test')
   .description('用固定示例测试 AI 连接及候选格式，不读取仓库改动')
   .option('--json', '输出 JSON，供脚本使用')
+  .addOption(new Option('--provider <name>', '只测试指定来源').conflicts('all'))
+  .addOption(new Option('--all', '逐一测试全部来源，不因成功停止').conflicts('provider'))
   .action(async (_options: unknown, command: Command) => {
-    const options = command.optsWithGlobals<{ json?: boolean }>();
+    const options = command.optsWithGlobals<{
+      json?: boolean;
+      provider?: string;
+      all?: boolean;
+      lang?: Language | 'cn';
+      count?: number;
+    }>();
     const config = await loadConfig();
     if (!config) throw new Error('尚未配置 AI，请先在终端运行 cmsg setup。');
+    const selected = options.provider ? config.filter((p) => p.name === options.provider) : config;
+    if (!selected.length) throw new Error('所选来源不存在，请运行 cmsg config 查看生效来源。');
+    const { AIError, generateWithFallback } = await import('./ai.js');
+    const preferences = {
+      language: options.lang === 'cn' ? ('zh' as const) : (options.lang ?? ('en' as const)),
+      count: options.count ?? 1,
+    };
+    const sample =
+      'diff --git a/example.txt b/example.txt\nnew file mode 100644\n--- /dev/null\n+++ b/example.txt\n@@ -0,0 +1 @@\n+Hello world\n';
+    const attempts: { provider: ProviderIdentity; diagnostic: AIDiagnostic }[] = [];
+    const diagnostics = {
+      ...generationDiagnostics,
+      onDiagnostic: (provider: ProviderIdentity, diagnostic: AIDiagnostic) => {
+        attempts.push({ provider, diagnostic });
+        generationDiagnostics.onDiagnostic(provider, diagnostic);
+      },
+    };
+    if (options.all) {
+      const results = [];
+      for (const provider of selected) {
+        try {
+          const result = await generateWithFallback([provider], preferences, sample, diagnostics);
+          results.push({ ok: true, ...result, diagnostic: attempts.at(-1)?.diagnostic });
+        } catch {
+          const last = attempts.at(-1)!;
+          results.push({ ok: false, provider: last.provider, diagnostic: last.diagnostic });
+          process.exitCode = 1;
+        }
+      }
+      console.log(
+        options.json
+          ? JSON.stringify({ results }, null, 2)
+          : results
+              .map(
+                (r) =>
+                  `${r.provider.name}：${r.ok ? '测试通过' : '测试失败'} · ${r.diagnostic?.code}`,
+              )
+              .join('\n'),
+      );
+      return;
+    }
     console.error('按优先级发送固定示例，成功即停止，不读取仓库改动。');
     const started = performance.now();
-    const { generateWithFallback } = await import('./ai.js');
-    const result = await generateWithFallback(
-      config,
-      { language: 'en', count: 1 },
-      'diff --git a/example.txt b/example.txt\nnew file mode 100644\n--- /dev/null\n+++ b/example.txt\n@@ -0,0 +1 @@\n+Hello world\n',
-      generationDiagnostics,
-    );
-    console.error(
-      `测试通过：连接和候选格式有效，用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`,
-    );
-    console.log(
-      options.json
-        ? JSON.stringify(
-            {
-              ...result.provider,
-              provider: result.provider,
-              messages: result.messages,
-              ...(result.usage ? { usage: result.usage } : {}),
-            },
-            null,
-            2,
-          )
-        : result.messages[0],
-    );
+    try {
+      const result = await generateWithFallback(selected, preferences, sample, diagnostics);
+      console.error(
+        `测试通过：连接和候选格式有效，用时 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`,
+      );
+      console.log(
+        options.json
+          ? JSON.stringify(
+              {
+                ...result.provider,
+                provider: result.provider,
+                messages: result.messages,
+                attempts,
+                ...(result.usage ? { usage: result.usage } : {}),
+              },
+              null,
+              2,
+            )
+          : result.messages.join('\n'),
+      );
+    } catch (error) {
+      if (options.json && error instanceof AIError) {
+        console.log(JSON.stringify({ ok: false, attempts }, null, 2));
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
   });
 
 program

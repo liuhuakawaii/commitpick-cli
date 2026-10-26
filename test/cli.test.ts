@@ -82,6 +82,24 @@ test('CLI uses ordered fallback for generation and test, reports the winner and 
     assert.doesNotMatch(result.stdout + result.stderr, /secret-.*-key/);
   }
   assert.deepEqual(calls, ['free', 'paid', 'free', 'paid']);
+  const selected = await run(['test', '--provider', 'unused', '--json'], cwd, env);
+  assert.equal(JSON.parse(selected.stdout).provider.name, 'unused');
+  assert.equal(calls.at(-1), 'unused');
+  await assert.rejects(
+    run(['test', '--all', '--json'], cwd, env),
+    (error: Error & { stdout: string; stderr: string }) => {
+      const report = JSON.parse(error.stdout);
+      assert.equal(report.results.length, 3);
+      assert.equal(report.results[0].ok, false);
+      assert.equal(report.results[0].diagnostic.stage, 'http');
+      assert.equal(report.results[1].ok, true);
+      assert.doesNotMatch(error.stdout + error.stderr, /secret-.*-key/);
+      return true;
+    },
+  );
+  const beforeUnknown = calls.length;
+  await assert.rejects(run(['test', '--provider', 'unknown'], cwd, env), /来源.*不存在/);
+  assert.equal(calls.length, beforeUnknown);
   const shown = await run(['config'], cwd, env);
   assert.match(shown.stdout, /优先级/);
   assert.doesNotMatch(shown.stdout, /secret-.*-key/);
@@ -109,7 +127,7 @@ test('CLI generates English/Chinese candidates through a relay, JSON is clean an
     const responses = req.url?.endsWith('/responses');
     lastDiff = JSON.parse(responses ? payload.input[0].content : payload.messages[1].content).diff;
     const prompt = responses ? payload.instructions : payload.messages[0].content;
-    const order = /in order: ([a-z, ]+) \(/.exec(prompt)![1]!.split(', ');
+    const order = /ordered: ([a-z, ]+)\./.exec(prompt)![1]!.split(', ');
     const english = [
       'feat: add greeting flag',
       'feat: expose greeting configuration',
@@ -310,7 +328,7 @@ test('test command uses a fixed sample outside Git for both protocols and keeps 
   await assert.rejects(
     run(['test', '--json'], cwd, env),
     (error: Error & { stdout: string; stderr: string }) => {
-      assert.equal(error.stdout, '');
+      assert.equal(JSON.parse(error.stdout).ok, false);
       assert.match(error.stderr, /403/);
       assert.doesNotMatch(error.stderr, /secret-test-key/);
       return true;

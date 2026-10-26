@@ -28,6 +28,50 @@ async function repo(t: { after: (fn: () => Promise<void>) => void }, initial = t
   return { cwd, git };
 }
 
+test('compact context bounds patch details and removes redundant summarized headers', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  for (let i = 0; i < 8; i++) {
+    await writeFile(join(cwd, `module${i}.ts`), 'export const original = true;\n');
+  }
+  git('add', '.');
+  git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'modules');
+  for (let i = 0; i < 8; i++) {
+    await writeFile(
+      join(cwd, `module${i}.ts`),
+      `export const final${i} = '${'x'.repeat(2200)}';\n`,
+    );
+  }
+  const result = await collect(cwd);
+  assert.equal(result.summarized, true);
+  assert.doesNotMatch(result.diff, /^index |^--- |^\+\+\+ /m);
+  const detailStart = result.diff.search(/\[File \d+: patch detail\]/);
+  assert.ok(detailStart >= 0);
+  assert.ok(Buffer.byteLength(result.diff.slice(detailStart)) <= 12_000);
+  assert.ok(Buffer.byteLength(result.diff) < 14_000);
+  assert.equal((result.diff.match(/Changed lines: \+1 -1/g) ?? []).length, 8);
+  for (let i = 0; i < 8; i++) assert.match(result.diff, new RegExp(`final${i}`));
+});
+
+test('small patches remain complete and emoji clipping never splits code points', async (t) => {
+  const collect = await collector();
+  const { cwd, git } = await repo(t);
+  await writeFile(join(cwd, 'app.ts'), 'export const small = "😀";\n');
+  const small = await collect(cwd);
+  assert.equal(small.summarized, false);
+  assert.match(small.diff, /index /);
+  assert.match(small.diff, /export const small = "😀";/);
+  const content = [299, 4095, 298, 4094].map((n) => 'a'.repeat(n) + '😀tail').join('\n');
+  for (const scope of ['untracked', 'worktree', 'staged'] as const) {
+    const path = scope === 'untracked' ? 'emoji.ts' : 'app.ts';
+    await writeFile(join(cwd, path), content);
+    if (scope === 'staged') git('add', '.');
+    const result = await collect(cwd, scope === 'staged' ? 'staged' : 'worktree');
+    assert.equal(Buffer.from(result.diff).toString('utf8'), result.diff, scope);
+    assert.doesNotMatch(result.diff, /\uFFFD/);
+  }
+});
+
 test('metadata-only collection preserves staged scope, UTF-8 renames and net worktree changes', async (t) => {
   const collect = await collector();
   const { cwd, git } = await repo(t);

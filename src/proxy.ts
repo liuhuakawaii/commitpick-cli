@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { isIP } from 'node:net';
-import { EnvHttpProxyAgent } from 'undici';
+import { EnvHttpProxyAgent, Pool } from 'undici';
 import type { ProviderProxyMode } from './config.js';
 
 const WINDOWS_INTERNET_SETTINGS =
@@ -11,6 +11,7 @@ export type ProxySource = 'environment' | 'windows-system' | 'direct';
 export type ProxyMode = ProviderProxyMode | 'system';
 
 export interface WindowsProxySettings {
+  readError?: 'timeout' | 'execution';
   enabled?: boolean;
   proxyServer?: string;
   proxyOverride?: string;
@@ -138,7 +139,13 @@ export function readWindowsSystemProxy(): WindowsProxySettings | undefined {
       stdio: ['ignore', 'pipe', 'ignore'],
     },
   );
-  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return;
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string')
+    return {
+      readError:
+        (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
+          ? 'timeout'
+          : 'execution',
+    };
   const output = result.stdout;
   const enabled = readRegistryValue(output, 'ProxyEnable');
   const proxyServer = readRegistryValue(output, 'ProxyServer');
@@ -174,6 +181,12 @@ function systemResolution(
     (options.platform ?? process.platform) === 'win32'
       ? (options.readSystemProxy ?? readWindowsSystemProxy)()
       : undefined;
+  if (settings?.readError)
+    throw new Error(
+      settings.readError === 'timeout'
+        ? '读取 Windows 系统代理超时，请检查系统负载或设置显式环境代理。'
+        : '读取 Windows 系统代理失败，请检查注册表访问权限或设置显式环境代理。',
+    );
   const parsed =
     settings?.enabled === true
       ? parseProxyServer(settings.proxyServer)
@@ -214,36 +227,86 @@ export function resolveProxyRoutes(
       ),
     ];
 
+  const target = new URL(endpoint);
+  const port = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+  const bypass = noProxy.split(/[,\s]+/).some((entry) => {
+    if (!entry) return false;
+    const match = entry.match(/^(.+):(\d+)$/);
+    if (match && Number(match[2]) !== port) return false;
+    const host = (match?.[1] ?? entry).replace(/^\*?\./, '').toLowerCase();
+    return target.hostname === host || target.hostname.endsWith(`.${host}`);
+  });
+  if (bypass) return [directResolution('直连（NO_PROXY 绕过）')];
+
   const routes: ProxyResolution[] = [];
   if (mode !== 'system' && hasProxyEnvironment(env)) {
     const httpValue = preferredEnv(env, 'HTTP_PROXY');
     const httpsValue = preferredEnv(env, 'HTTPS_PROXY');
     const httpProxy = httpValue?.trim() ?? '';
     const httpsProxy = httpsValue?.trim() ?? httpProxy;
-    routes.push({
-      source: 'environment',
-      httpProxy,
-      httpsProxy,
-      noProxy,
-      description: '环境变量代理（遵循 NO_PROXY）',
-    });
+    if (target.protocol === 'https:' ? httpsProxy || httpProxy : httpProxy)
+      routes.push({
+        source: 'environment',
+        httpProxy,
+        httpsProxy,
+        noProxy,
+        description: '环境变量代理（遵循 NO_PROXY）',
+      });
   }
-  const system = systemResolution(endpoint, env, options);
+  // A single snapshot is supplied by generation; standalone callers read once here.
+  let snapshot: WindowsProxySettings | undefined;
+  let system: ProxyResolution | undefined;
+  try {
+    system = systemResolution(endpoint, env, {
+      ...options,
+      readSystemProxy: () => {
+        snapshot = (options.readSystemProxy ?? readWindowsSystemProxy)();
+        return snapshot;
+      },
+    });
+  } catch (error) {
+    if (!routes.length) throw error;
+    routes[0]!.description += '（系统代理读取或解析失败，仅使用显式环境代理）';
+  }
   if (system) routes.push(system);
 
-  if (mode === 'auto') routes.push(directResolution('直连（代理失败后的回退路径）'));
+  if (mode === 'auto')
+    routes.push(
+      directResolution(
+        snapshot?.autoConfigUrl && !system
+          ? '直连（仅配置 PAC，不执行脚本）'
+          : '直连（代理失败后的回退路径）',
+      ),
+    );
   if (mode === 'proxy' && !routes.length)
     throw new Error('未检测到可用代理，请配置 HTTP_PROXY / HTTPS_PROXY 或 Windows 系统代理。');
   if (mode === 'system' && !routes.length)
     routes.push(directResolution('直连（未检测到适用的静态系统代理）'));
 
   const seen = new Set<string>();
-  return routes.filter((route) => {
-    const key = `${route.httpProxy}|${route.httpsProxy}|${route.noProxy}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return routes
+    .map((route) => {
+      const proxy =
+        target.protocol === 'https:' ? route.httpsProxy || route.httpProxy : route.httpProxy;
+      return proxy
+        ? route
+        : directResolution(
+            route.source === 'direct' ? route.description : '直连（当前协议未配置代理）',
+          );
+    })
+    .filter((route) => {
+      const proxy =
+        target.protocol === 'https:' ? route.httpsProxy || route.httpProxy : route.httpProxy;
+      let key = proxy;
+      try {
+        if (proxy) key = new URL(proxy).href;
+      } catch {
+        /* Invalid routes are classified at request construction. */
+      }
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}): ProxyResolution {
@@ -254,10 +317,33 @@ export function resolveProxy(endpoint: string, options: ResolveProxyOptions = {}
   return routes[0]!;
 }
 
-export function createProxyAgent(resolution: ProxyResolution): EnvHttpProxyAgent {
+export function createProxyAgent(
+  resolution: ProxyResolution,
+  options: { connectTimeoutMs?: number; onConnected?: () => void } = {},
+): EnvHttpProxyAgent {
   return new EnvHttpProxyAgent({
     httpProxy: resolution.httpProxy,
     httpsProxy: resolution.httpsProxy,
     noProxy: resolution.noProxy,
+    connect: { timeout: options.connectTimeoutMs ?? 5000 },
+    factory: (origin, opts) => {
+      const pool = new Pool(origin, opts);
+      pool.once('connect', () => options.onConnected?.());
+      return pool;
+    },
   });
+}
+
+export function proxySnapshot(): Pick<ResolveProxyOptions, 'readSystemProxy'> {
+  let loaded = false;
+  let settings: WindowsProxySettings | undefined;
+  return {
+    readSystemProxy: () => {
+      if (!loaded) {
+        settings = readWindowsSystemProxy();
+        loaded = true;
+      }
+      return settings;
+    },
+  };
 }
