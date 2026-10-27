@@ -38,6 +38,7 @@ for (const fixture of fixtures) {
             console.error(`来源：${source.name}`);
           },
           onFailure: (source, reason) => console.error(`${source.name}：${reason}`),
+          onWarning: (source, reason) => console.error(`提示（${source.name}）：${reason}`),
         },
       );
       messages = result.messages;

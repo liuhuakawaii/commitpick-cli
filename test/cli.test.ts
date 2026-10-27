@@ -87,6 +87,99 @@ test('CLI uses ordered fallback for generation and test, reports the winner and 
   assert.doesNotMatch(shown.stdout, /secret-.*-key/);
 });
 
+test('CLI retains valid candidates with unexpected counts in both protocols', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'commitpick-count-cli-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q'], { cwd });
+  await writeFile(join(cwd, 'hello.ts'), 'export const hello = true;\n');
+  let returned = ['feat: add greeting', 'feat: introduce greeting', 'feat: 新增问候'];
+  const calls: string[] = [];
+  const server = createServer(async (req, res) => {
+    let text = '';
+    for await (const chunk of req) text += chunk;
+    calls.push(JSON.parse(text).model);
+    const content = JSON.stringify({ messages: returned });
+    res.end(
+      JSON.stringify({
+        status: 'completed',
+        output: [
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] },
+        ],
+        choices: [{ message: { content } }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const path = join(cwd, '.git', 'providers.json');
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CMSG_CONFIG: path,
+    CMSG_BASE_URL: '',
+    CMSG_MODEL: '',
+    CMSG_PROTOCOL: '',
+  };
+  delete env.CMSG_API_KEY;
+  for (const protocol of ['responses', 'chat-completions']) {
+    await writeFile(
+      path,
+      JSON.stringify({
+        providers: ['primary', 'unused'].map((name) => ({
+          name,
+          model: name,
+          protocol,
+          proxyMode: 'direct',
+          endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+        })),
+      }),
+    );
+    for (const args of [
+      ['--count', '1', '--json'],
+      ['test', '--json'],
+    ]) {
+      const result = await run(args, cwd, env);
+      const data = JSON.parse(result.stdout);
+      assert.deepEqual(data.messages, returned);
+      assert.match(result.stderr, /请求 1 条.*实际.*3 条/);
+      assert.doesNotMatch(result.stderr, /来源 primary 失败|所有 AI 来源均失败/);
+      assert.equal(data.provider.name, 'primary');
+      assert.deepEqual(data.usage, { inputTokens: 10, outputTokens: 5 });
+      if (args[0] !== 'test') assert.deepEqual(data.languages, ['en', 'en', 'zh']);
+    }
+    const printed = await run(['--count', '1', '--print'], cwd, env);
+    for (const message of returned) assert.ok(printed.stdout.includes(message));
+    const tested = await run(['test'], cwd, env);
+    for (const message of returned) assert.ok(tested.stdout.includes(message));
+  }
+  returned = ['feat: 新增问候'];
+  const fewer = await run(['--count', '4', '--json'], cwd, env);
+  assert.deepEqual(JSON.parse(fewer.stdout).messages, returned);
+  assert.deepEqual(JSON.parse(fewer.stdout).languages, ['zh']);
+  await assert.rejects(run(['--count', '4', '--pick', '3'], cwd, env), (error: any) => {
+    assert.match(error.stderr, /实际.*1 条/);
+    assert.ok(error.stdout.includes(returned[0]!));
+    assert.doesNotMatch(error.stdout, /undefined/);
+    return true;
+  });
+  assert.ok(
+    calls.every((model) => model === 'primary'),
+    'count mismatch must not trigger fallback',
+  );
+  for (const invalid of [
+    [],
+    ['feat: valid', 'not conventional'],
+    ['feat: same', 'feat: same'],
+    ['feat: valid', 'feat: bad\nbody'],
+  ]) {
+    returned = invalid;
+    await assert.rejects(run(['--count', '1', '--json'], cwd, env));
+  }
+});
+
 test('CLI generates English/Chinese candidates through a relay, JSON is clean and Git is unchanged', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'commitpick-cli-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));

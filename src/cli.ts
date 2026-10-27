@@ -27,6 +27,8 @@ const generationDiagnostics = {
     ),
   onFailure: (provider: ProviderIdentity, reason: string) =>
     console.error(`来源 ${provider.name} 失败：${reason}。`),
+  onWarning: (provider: ProviderIdentity, reason: string) =>
+    console.error(`提示（${provider.name}）：${reason}`),
   onRoute: (description: string) => console.error(`网络路径：${description}`),
 };
 function countArgument(value: string): number {
@@ -162,6 +164,7 @@ const program = new Command()
       );
     let usage: TokenUsage | undefined;
     let provider: ProviderIdentity | undefined;
+    let languages = candidateLanguages(generation.language, generation.count);
     const requestMessages = async (hint?: string) => {
       if (!config) return generateLocalMessages(changes.files, generation);
       console.error(
@@ -176,6 +179,7 @@ const program = new Command()
       });
       usage = result.usage;
       provider = result.provider;
+      languages = result.languages;
       console.error(`使用来源：${provider.name}`);
       if (usage)
         console.error(
@@ -193,7 +197,7 @@ const program = new Command()
             scope: changes.scope,
             source: config ? 'ai' : 'local',
             messages,
-            languages: candidateLanguages(generation.language, generation.count),
+            languages,
             ...(usage ? { usage } : {}),
             ...(provider ? { provider } : {}),
           },
@@ -208,8 +212,15 @@ const program = new Command()
       return;
     }
     let selected: string;
-    if (options.pick) selected = messages[options.pick - 1]!;
-    else {
+    if (options.pick) {
+      if (options.pick > messages.length) {
+        console.log(messages.map((message, index) => `${index + 1}. ${message}`).join('\n'));
+        throw new Error(
+          `实际只返回 ${messages.length} 条候选，无法选择第 ${options.pick} 条；已有结果见上方。`,
+        );
+      }
+      selected = messages[options.pick - 1]!;
+    } else {
       const { select, input } = await import('@inquirer/prompts');
       const { selectMessage } = await import('./selection.js');
       selected = await selectMessage(
@@ -284,7 +295,7 @@ program
             null,
             2,
           )
-        : result.messages[0],
+        : result.messages.join('\n'),
     );
   });
 

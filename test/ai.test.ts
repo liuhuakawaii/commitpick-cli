@@ -319,6 +319,11 @@ test('parses JSON fences; rejects malformed, duplicate, multiline and non-conven
     JSON.stringify({ messages: ['fix: a\nbody', 'fix: b', 'fix: c'] }),
   ])
     assert.throws(() => parseMessages(invalid, 3), /候选|格式|JSON/);
+
+  assert.throws(
+    () => parseMessages(JSON.stringify({ messages: ['fix: a', 'fix: b', 'fix: c'] }), 1),
+    /预期 1 条，实际 3 条/,
+  );
 });
 
 test('HTTP errors never echo provider response or credentials', async (t) => {
